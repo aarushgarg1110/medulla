@@ -33,7 +33,7 @@ def make_session(session_id="sess-001", project_dir="/proj/a", turn_count=5, mes
         files=["/proj/a/foo.py"],
         first_message="hello",
         all_user_text=" ".join(messages),
-        user_messages=messages,
+        messages=messages,
     )
 
 
