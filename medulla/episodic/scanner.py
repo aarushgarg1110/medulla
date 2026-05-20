@@ -1,0 +1,113 @@
+"""Discover and scan Claude Code session files into the DB."""
+from __future__ import annotations
+
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+
+from medulla.episodic.parser import (
+    parse_session, parse_agent_session, is_subagent_file
+)
+from medulla.episodic.store import (
+    upsert_session, upsert_agent_session,
+    get_session_scanned_at, get_agent_scanned_at,
+)
+
+CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
+KIRO_SESSIONS_DIR = Path.home() / ".kiro" / "sessions"
+
+
+def scan(conn: sqlite3.Connection, force: bool = False, source: str | None = None) -> dict:
+    """Scan session files and index new/changed ones.
+
+    Returns counts: {indexed, skipped, errors, agents_indexed, agents_skipped}
+    """
+    indexed = skipped = errors = 0
+    agents_indexed = agents_skipped = 0
+
+    session_files, agent_files = _discover_files(source)
+
+    for path in session_files:
+        try:
+            result = _process_session(conn, path, force)
+            if result == "indexed":
+                indexed += 1
+            elif result == "skipped":
+                skipped += 1
+        except Exception as e:
+            errors += 1
+
+    for path in agent_files:
+        try:
+            result = _process_agent(conn, path, force)
+            if result == "indexed":
+                agents_indexed += 1
+            elif result == "skipped":
+                agents_skipped += 1
+        except Exception:
+            pass
+
+    return {
+        "indexed": indexed,
+        "skipped": skipped,
+        "errors": errors,
+        "agents_indexed": agents_indexed,
+        "agents_skipped": agents_skipped,
+    }
+
+
+def _discover_files(source: str | None) -> tuple[list[Path], list[Path]]:
+    session_files: list[Path] = []
+    agent_files: list[Path] = []
+
+    if source is None or source == "claude":
+        if CLAUDE_PROJECTS_DIR.exists():
+            for jsonl in CLAUDE_PROJECTS_DIR.rglob("*.jsonl"):
+                if is_subagent_file(jsonl):
+                    agent_files.append(jsonl)
+                else:
+                    session_files.append(jsonl)
+
+    if source is None or source == "kiro":
+        if KIRO_SESSIONS_DIR.exists():
+            for jsonl in KIRO_SESSIONS_DIR.rglob("*.jsonl"):
+                session_files.append(jsonl)
+
+    return session_files, agent_files
+
+
+def _process_session(conn: sqlite3.Connection, path: Path, force: bool) -> str:
+    if not force:
+        scanned_at = get_session_scanned_at(conn, path.stem)
+        if scanned_at:
+            file_mtime = datetime.fromtimestamp(
+                path.stat().st_mtime, tz=timezone.utc
+            ).isoformat()
+            if file_mtime <= scanned_at:
+                return "skipped"
+
+    session = parse_session(path)
+    if session is None:
+        return "skipped"
+
+    upsert_session(conn, session)
+    return "indexed"
+
+
+def _process_agent(conn: sqlite3.Connection, path: Path, force: bool) -> str:
+    agent_id = path.stem.removeprefix("agent-")
+    if not force:
+        scanned_at = get_agent_scanned_at(conn, agent_id)
+        if scanned_at:
+            file_mtime = datetime.fromtimestamp(
+                path.stat().st_mtime, tz=timezone.utc
+            ).isoformat()
+            if file_mtime <= scanned_at:
+                return "skipped"
+
+    agent = parse_agent_session(path)
+    if agent is None:
+        return "skipped"
+
+    upsert_agent_session(conn, agent)
+    return "indexed"

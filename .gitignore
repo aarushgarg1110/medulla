@@ -1,0 +1,22 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Coverage
+.coverage
+htmlcov/
+
+# DB (local runtime state, not versioned)
+*.db
+*.db-shm
+*.db-wal
+
+# uv / python version pin
+.python-version
