@@ -7,8 +7,9 @@ import pytest
 from medulla.episodic.parser import (
     MAX_FIRST_MSG,
     ParsedSession,
+    _extract_assistant_text,
     _extract_paths,
-    _extract_text,
+    _extract_user_text,
     _read_json,
     is_subagent_file,
     parse_agent_session,
@@ -58,7 +59,7 @@ def test_parse_basic_session(tmp_path):
     assert result.first_message == "hello world"
     assert "hello world" in result.all_user_text
     assert "next question" in result.all_user_text
-    assert len(result.user_messages) == 2
+    assert len(result.messages) >= 2  # user + assistant messages interleaved
 
 
 def test_parse_session_uses_stem_as_fallback_id(tmp_path):
@@ -89,7 +90,7 @@ def test_parse_session_all_user_text_has_no_cap(tmp_path):
     result = parse_session(path)
     assert result is not None
     assert len(result.all_user_text) > 8000, "all_user_text must not be capped at 8KB"
-    assert len(result.user_messages) == 50
+    assert len(result.messages) >= 50
 
 
 def test_parse_session_extracts_file_paths(tmp_path):
@@ -195,6 +196,49 @@ def test_parse_session_human_role_alias(tmp_path):
     assert result.first_message == "hello from human"
 
 
+def test_parse_session_indexes_assistant_text(tmp_path):
+    """Assistant text blocks must appear in all_user_text and messages — the core Sprint 1.5 fix."""
+    lines = [
+        json.dumps(claude_user("what compounds were suspicious in Salacia?")),
+        json.dumps({
+            "sessionId": "test-session-id",
+            "timestamp": "2026-01-01T10:01:00Z",
+            "type": "assistant",
+            "model": "claude-sonnet-4-6",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "NDI-218229 has delta logD of +6.11, four sigma above batch mean. Almost certainly a measurement error from the Syngene batch."},
+                    {"type": "tool_use", "name": "Bash", "input": {"command": "echo hi"}},
+                ],
+            },
+        }),
+    ]
+    path = tmp_path / "salacia.jsonl"
+    path.write_text("\n".join(lines))
+
+    result = parse_session(path)
+    assert result is not None
+    assert "NDI-218229" in result.all_user_text
+    assert "four sigma" in result.all_user_text
+    assert "Bash" not in result.all_user_text  # tool_use excluded
+    assert any("NDI-218229" in m for m in result.messages)
+
+
+def test_parse_session_assistant_only_no_result(tmp_path):
+    """Session with only assistant messages (no user turns) should still return None."""
+    line = json.dumps({
+        "sessionId": "asst-only",
+        "timestamp": "2026-01-01T10:00:00Z",
+        "type": "assistant",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": "I am Claude."}]},
+    })
+    path = tmp_path / "asst-only.jsonl"
+    path.write_text(line)
+    # No user messages means we can't establish first_message or intent
+    assert parse_session(path) is None
+
+
 def test_parse_session_content_as_list(tmp_path):
     """User message content can be a list of {type, text} blocks."""
     line = json.dumps({
@@ -267,33 +311,68 @@ def test_parse_agent_session_returns_none_no_user_messages(tmp_path):
     assert parse_agent_session(path) is None
 
 
-# ── _extract_text ─────────────────────────────────────────────────────────────
+# ── _extract_user_text ────────────────────────────────────────────────────────
 
-def test_extract_text_string_content():
-    assert _extract_text({"content": "hello"}) == "hello"
+def test_extract_user_text_string_content():
+    assert _extract_user_text({"content": "hello"}) == "hello"
 
 
-def test_extract_text_list_content():
+def test_extract_user_text_list_content():
     msg = {"content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]}
-    assert _extract_text(msg) == "a b"
+    assert _extract_user_text(msg) == "a b"
 
 
-def test_extract_text_empty():
-    assert _extract_text({}) == ""
+def test_extract_user_text_empty():
+    assert _extract_user_text({}) == ""
 
 
-def test_extract_text_skips_tool_result():
+def test_extract_user_text_skips_tool_result():
     msg = {"content": [
         {"type": "text", "text": "keep"},
         {"type": "tool_result", "content": "drop"},
     ]}
-    result = _extract_text(msg)
+    result = _extract_user_text(msg)
     assert "keep" in result
     assert "drop" not in result
 
 
-def test_extract_text_non_string_content():
-    assert _extract_text({"content": 42}) == ""
+def test_extract_user_text_non_string_content():
+    assert _extract_user_text({"content": 42}) == ""
+
+
+# ── _extract_assistant_text ───────────────────────────────────────────────────
+
+def test_extract_assistant_text_plain_string():
+    assert _extract_assistant_text({"content": "The answer is 42."}) == "The answer is 42."
+
+
+def test_extract_assistant_text_extracts_text_blocks():
+    msg = {"content": [
+        {"type": "text", "text": "Here is my analysis:"},
+        {"type": "tool_use", "name": "Bash", "input": {}},
+        {"type": "text", "text": "The result confirms NDI-218229 is an outlier."},
+    ]}
+    result = _extract_assistant_text(msg)
+    assert "Here is my analysis" in result
+    assert "NDI-218229 is an outlier" in result
+    assert "Bash" not in result  # tool_use excluded
+
+
+def test_extract_assistant_text_skips_tool_use():
+    msg = {"content": [
+        {"type": "tool_use", "name": "Read", "input": {"path": "/foo"}},
+    ]}
+    assert _extract_assistant_text(msg) == ""
+
+
+def test_extract_assistant_text_empty():
+    assert _extract_assistant_text({}) == ""
+
+
+def test_extract_assistant_text_bare_string_items():
+    msg = {"content": ["bare string analysis"]}
+    result = _extract_assistant_text(msg)
+    assert "bare string analysis" in result
 
 
 # ── _read_json ─────────────────────────────────────────────────────────────────

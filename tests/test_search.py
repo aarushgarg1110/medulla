@@ -131,6 +131,25 @@ def test_search_hyphenated_term(db):
     assert len(results) > 0
 
 
+def test_search_finds_assistant_content(db):
+    """Assistant message text must be searchable — Sprint 1.5 core requirement."""
+    # Simulate a session where only the assistant said "NDI-218229"
+    s = make_session("sess-asst", messages=[
+        "what compounds were suspicious?",                          # user turn
+        "NDI-218229 has delta logD of +6.11, four sigma above batch mean.",  # assistant turn (now indexed)
+        "can you dig deeper into that one?",                        # user turn
+        "The measurement came from Syngene batch April 2023.",      # assistant turn
+    ])
+    upsert_session(db, s)
+
+    results = search(db, "NDI-218229")
+    assert len(results) > 0
+    assert any(r.id == "sess-asst" for r in results)
+
+    results2 = search(db, "four sigma batch mean")
+    assert any(r.id == "sess-asst" for r in results2)
+
+
 def test_search_across_multiple_sessions(db):
     _insert(db, "sess-a", ["logD batch effect Salacia"])
     _insert(db, "sess-b", ["pKa basic acidic site selection"])
