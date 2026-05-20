@@ -121,6 +121,52 @@ def stats():
             console.print(f"    {name:<30} {count:>6}")
 
 
+# ── session-detail ────────────────────────────────────────────────────────────
+
+@app.command(name="session-detail")
+def session_detail(
+    session_id: Annotated[str, typer.Argument(help="Session ID (full or 8-char prefix)")],
+):
+    """Show full detail for a session — chunks, agents, files touched."""
+    from medulla.db.database import connect
+    from medulla.episodic.store import get_session_detail
+
+    conn = connect()
+
+    # Allow 8-char prefix lookup
+    if len(session_id) < 36:
+        row = conn.execute(
+            "SELECT session_id FROM sessions WHERE session_id LIKE ?",
+            (f"{session_id}%",)
+        ).fetchone()
+        if not row:
+            console.print(f"[red]Session not found: {session_id}[/red]")
+            raise typer.Exit(1)
+        session_id = row["session_id"]
+
+    detail = get_session_detail(conn, session_id)
+    if not detail:
+        console.print(f"[red]Session not found: {session_id}[/red]")
+        raise typer.Exit(1)
+
+    s = detail["session"]
+    console.print(f"\n[bold]Session:[/bold] {s['session_id']}")
+    console.print(f"  Project:    {s.get('project_dir', '')}")
+    console.print(f"  Model:      {s.get('model', '')}")
+    console.print(f"  Date:       {(s.get('started_at') or '')[:10]} → {(s.get('ended_at') or '')[:10]}")
+    console.print(f"  Turns:      {s.get('turn_count', 0)}   Tool calls: {s.get('tool_call_count', 0)}")
+
+    if detail["agents"]:
+        console.print(f"\n  [bold]Subagents ({len(detail['agents'])}):[/bold]")
+        for a in detail["agents"]:
+            console.print(f"    {a['agent_id'][:8]}  {a.get('first_message', '')[:60]}")
+
+    console.print(f"\n  [bold]Chunks ({len(detail['chunks'])}):[/bold]")
+    for c in detail["chunks"]:
+        console.print(f"\n[dim]── Chunk {c['chunk_index']} (turns {c['turn_start']}–{c['turn_end']}) ──[/dim]")
+        console.print(c["chunk_text"][:400])
+
+
 # ── mcp ────────────────────────────────────────────────────────────────────────
 
 @app.command()
