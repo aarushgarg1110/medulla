@@ -46,11 +46,17 @@ _TOOLS = [
     ),
     types.Tool(
         name="medulla_session_detail",
-        description="Retrieve full content of a specific session — chunks, files touched, tools used, and child agents.",
+        description=(
+            "Retrieve content of a specific session. "
+            "Without chunk_index: returns session metadata + first 5 chunks. "
+            "With chunk_index: returns that specific chunk in full (use to page through a long session). "
+            "Call repeatedly with increasing chunk_index to read the full session."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
-                "session_id": {"type": "string", "description": "Session ID from medulla_search or medulla_list"},
+                "session_id": {"type": "string", "description": "Session ID (full UUID or 8-char prefix)"},
+                "chunk_index": {"type": "integer", "description": "Specific chunk to fetch (0-based). Omit for session overview + first 5 chunks."},
             },
             "required": ["session_id"],
         },
@@ -234,25 +240,44 @@ def _tool_session_detail(conn, args: dict) -> str:
         return f"Session not found: {session_id}"
 
     s = detail["session"]
-    lines = [
-        f"Session: {s['session_id']}",
-        f"Project: {s.get('project_dir', '')}",
-        f"Model:   {s.get('model', '')}",
-        f"Date:    {(s.get('started_at') or '')[:10]} → {(s.get('ended_at') or '')[:10]}",
-        f"Turns:   {s.get('turn_count', 0)}   Tool calls: {s.get('tool_call_count', 0)}",
-        "",
-    ]
+    total_chunks = len(detail["chunks"])
+
+    # Specific chunk requested — return it in full
+    chunk_index = args.get("chunk_index")
+    if chunk_index is not None:
+        matches = [c for c in detail["chunks"] if c["chunk_index"] == chunk_index]
+        if not matches:
+            return f"Chunk {chunk_index} not found. Session has {total_chunks} chunks (0–{total_chunks - 1})."
+        c = matches[0]
+        lines = [
+            f"Session {s['session_id'][:8]} — Chunk {chunk_index} of {total_chunks - 1} "
+            f"(turns {c['turn_start']}–{c['turn_end']})",
+            "",
+            c["chunk_text"],  # full text, no truncation
+            "",
+            f"[Next: chunk_index={chunk_index + 1}]" if chunk_index + 1 < total_chunks else "[End of session]",
+        ]
+        return "\n".join(lines)
+
+    # Overview: metadata + first 5 chunks
+    lines = []
+    lines.append(f"Session: {s['session_id']}")
+    lines.append(f"Project: {s.get('project_dir', '')}")
+    lines.append(f"Date:    {(s.get('started_at') or '')[:10]} → {(s.get('ended_at') or '')[:10]}")
+    lines.append(f"Turns:   {s.get('turn_count', 0)}   Tool calls: {s.get('tool_call_count', 0)}")
+    lines.append(f"Chunks:  {total_chunks} total (use chunk_index=N to fetch any chunk in full)")
+    lines.append("")
     if detail["agents"]:
         lines.append(f"Subagents ({len(detail['agents'])}):")
         for a in detail["agents"]:
             lines.append(f"  {a['agent_id'][:8]}  {a.get('first_message', '')[:60]}")
         lines.append("")
-
-    lines.append(f"Chunks ({len(detail['chunks'])}):")
-    for c in detail["chunks"]:
+    lines.append("First 5 chunks (call with chunk_index=N for any specific chunk):")
+    for c in detail["chunks"][:5]:
         lines.append(f"\n── Chunk {c['chunk_index']} (turns {c['turn_start']}–{c['turn_end']}) ──")
-        lines.append(c["chunk_text"][:600])
-
+        lines.append(c["chunk_text"][:1500])
+    if total_chunks > 5:
+        lines.append(f"\n... {total_chunks - 5} more chunks. Use chunk_index=5 through chunk_index={total_chunks - 1} to read them.")
     return "\n".join(lines)
 
 

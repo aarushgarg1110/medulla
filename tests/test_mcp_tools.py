@@ -88,6 +88,27 @@ def test_tool_session_detail_prefix_lookup(db):
     assert "sess-mcp-001" in result
 
 
+def test_tool_session_detail_specific_chunk(db):
+    """chunk_index param returns that chunk in full with no truncation."""
+    _setup(db)
+    result = _tool_session_detail(db, {"session_id": "sess-mcp-001", "chunk_index": 0})
+    assert "Chunk 0" in result
+    assert "Next:" in result or "End of session" in result
+
+
+def test_tool_session_detail_chunk_out_of_range(db):
+    _setup(db)
+    result = _tool_session_detail(db, {"session_id": "sess-mcp-001", "chunk_index": 9999})
+    assert "not found" in result.lower() or "chunks" in result
+
+
+def test_tool_session_detail_overview_shows_chunk_hint(db):
+    """Overview should tell Claude how to fetch specific chunks."""
+    _setup(db)
+    result = _tool_session_detail(db, {"session_id": "sess-mcp-001"})
+    assert "chunk_index" in result
+
+
 def test_tool_session_detail_prefix_not_found(db):
     result = _tool_session_detail(db, {"session_id": "zzzznothere"})
     assert "not found" in result.lower()
