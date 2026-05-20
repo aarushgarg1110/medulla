@@ -53,7 +53,7 @@ def upsert_session(conn: sqlite3.Connection, session: ParsedSession) -> None:
 
     # Replace chunks
     conn.execute("DELETE FROM session_chunks WHERE session_id = ?", (session.session_id,))
-    chunks = chunk_messages(session.user_messages)
+    chunks = chunk_messages(session.messages)
     for chunk in chunks:
         conn.execute("""
             INSERT INTO session_chunks (session_id, chunk_index, chunk_text, turn_start, turn_end)
