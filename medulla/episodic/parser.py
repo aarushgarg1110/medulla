@@ -1,11 +1,15 @@
-"""Parse Claude Code (and stub Kiro/Codex/Gemini) JSONL session files."""
+"""Parse Claude Code (and stub Kiro/Codex/Gemini) JSONL session files.
+
+Both user AND assistant text blocks are indexed — assistant messages contain
+the most valuable content (analysis, findings, code) and must be searchable.
+Only tool_use and tool_result blocks are excluded (noisy / already in tool_events).
+"""
 from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
 
 
 MAX_FIRST_MSG = 500
@@ -27,8 +31,8 @@ class ParsedSession:
     tool_names: list[str]
     files: list[str]
     first_message: str | None
-    all_user_text: str  # complete, no cap
-    user_messages: list[str]  # ordered, for chunker
+    all_user_text: str       # full conversation text (user + assistant), no cap
+    messages: list[str]      # ordered interleaved user+assistant text, for chunker
 
 
 @dataclass
@@ -43,7 +47,7 @@ class ParsedAgentSession:
     tool_call_count: int
     tool_names: list[str]
     first_message: str | None
-    all_user_text: str
+    all_user_text: str       # full conversation text (user + assistant), no cap
     message_count: int
     first_seen_at: str | None
     last_updated_at: str | None
@@ -96,7 +100,8 @@ def _parse_claude(path: Path, slug: str, body: str) -> ParsedSession | None:
     tool_names: set[str] = set()
     files: set[str] = set()
     first_message: str | None = None
-    user_messages: list[str] = []
+    messages: list[str] = []   # interleaved user + assistant text
+    has_user_message = False
 
     for raw_line in body.splitlines():
         line = raw_line.strip()
@@ -122,35 +127,36 @@ def _parse_claude(path: Path, slug: str, body: str) -> ParsedSession | None:
         msg = node.get("message", {})
         role = msg.get("role") or node.get("type", "")
 
-        # User / human turn
         if role in ("user", "human"):
-            text = _extract_text(msg)
+            text = _extract_user_text(msg)
             if text:
                 if first_message is None:
                     first_message = text[:MAX_FIRST_MSG]
-                user_messages.append(text)
+                messages.append(text)
+                has_user_message = True
 
-        # Assistant turn
-        if role == "assistant":
+        elif role == "assistant":
             turn_count += 1
             content = msg.get("content", [])
             if isinstance(content, list):
                 for item in content:
-                    if isinstance(item, dict) and item.get("type") == "tool_use":
-                        tool_call_count += 1
-                        name = item.get("name", "")
-                        if name:
-                            tool_names.add(name)
-                        _extract_paths(item.get("input", {}), files)
+                    if isinstance(item, dict):
+                        if item.get("type") == "tool_use":
+                            tool_call_count += 1
+                            name = item.get("name", "")
+                            if name:
+                                tool_names.add(name)
+                            _extract_paths(item.get("input", {}), files)
+            # Index assistant text blocks (the analysis, findings, code explanations)
+            text = _extract_assistant_text(msg)
+            if text:
+                messages.append(text)
 
-        # Model field
         if model is None and "model" in node:
             model = node["model"]
 
-    if not user_messages:
+    if not has_user_message:
         return None
-
-    all_user_text = " ".join(user_messages)
 
     return ParsedSession(
         session_id=session_id,
@@ -166,13 +172,12 @@ def _parse_claude(path: Path, slug: str, body: str) -> ParsedSession | None:
         tool_names=sorted(tool_names),
         files=sorted(files),
         first_message=first_message,
-        all_user_text=all_user_text,
-        user_messages=user_messages,
+        all_user_text=" ".join(messages),
+        messages=messages,
     )
 
 
 def _parse_agent_claude(path: Path, body: str) -> ParsedAgentSession | None:
-    # agent-<agentId>.jsonl inside .../subagents/
     agent_id = path.stem.removeprefix("agent-")
     parent_session_id: str | None = None
     agent_slug: str | None = None
@@ -185,8 +190,9 @@ def _parse_agent_claude(path: Path, body: str) -> ParsedAgentSession | None:
     tool_call_count = 0
     tool_names: set[str] = set()
     first_message: str | None = None
-    user_messages: list[str] = []
+    messages: list[str] = []
     message_count = 0
+    has_user_message = False
 
     for raw_line in body.splitlines():
         line = raw_line.strip()
@@ -214,13 +220,14 @@ def _parse_agent_claude(path: Path, body: str) -> ParsedAgentSession | None:
         message_count += 1
 
         if role in ("user", "human"):
-            text = _extract_text(msg)
+            text = _extract_user_text(msg)
             if text:
                 if first_message is None:
                     first_message = text[:MAX_FIRST_MSG]
-                user_messages.append(text)
+                messages.append(text)
+                has_user_message = True
 
-        if role == "assistant":
+        elif role == "assistant":
             turn_count += 1
             content = msg.get("content", [])
             if isinstance(content, list):
@@ -230,11 +237,14 @@ def _parse_agent_claude(path: Path, body: str) -> ParsedAgentSession | None:
                         name = item.get("name", "")
                         if name:
                             tool_names.add(name)
+            text = _extract_assistant_text(msg)
+            if text:
+                messages.append(text)
 
         if model is None and "model" in node:
             model = node["model"]
 
-    if not user_messages:
+    if not has_user_message:
         return None
 
     return ParsedAgentSession(
@@ -248,24 +258,17 @@ def _parse_agent_claude(path: Path, body: str) -> ParsedAgentSession | None:
         tool_call_count=tool_call_count,
         tool_names=sorted(tool_names),
         first_message=first_message,
-        all_user_text=" ".join(user_messages),
+        all_user_text=" ".join(messages),
         message_count=message_count,
         first_seen_at=first_seen_at,
         last_updated_at=last_updated_at,
     )
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Text extraction ───────────────────────────────────────────────────────────
 
-def _read_json(line: str) -> dict | None:
-    try:
-        obj = json.loads(line)
-        return obj if isinstance(obj, dict) else None
-    except json.JSONDecodeError:
-        return None
-
-
-def _extract_text(msg: dict) -> str:
+def _extract_user_text(msg: dict) -> str:
+    """Extract text from a user message. Skips tool_result blocks (noisy)."""
     content = msg.get("content", "")
     if isinstance(content, str):
         return content.strip()
@@ -277,11 +280,36 @@ def _extract_text(msg: dict) -> str:
             elif isinstance(item, dict):
                 if item.get("type") == "text":
                     parts.append(item.get("text", ""))
-                elif item.get("type") == "tool_result":
-                    # skip tool outputs in user messages
-                    pass
+                # skip tool_result — raw tool output, not human intent
         return " ".join(p for p in parts if p).strip()
     return ""
+
+
+def _extract_assistant_text(msg: dict) -> str:
+    """Extract text blocks from an assistant message. Skips tool_use blocks."""
+    content = msg.get("content", "")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict) and item.get("type") == "text":
+                parts.append(item.get("text", ""))
+            # skip tool_use (captured as tool_events) and tool_result
+        return " ".join(p for p in parts if p).strip()
+    return ""
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _read_json(line: str) -> dict | None:
+    try:
+        obj = json.loads(line)
+        return obj if isinstance(obj, dict) else None
+    except json.JSONDecodeError:
+        return None
 
 
 _PATH_RE = re.compile(r"[\"']?(/(?:[^\"',\s\])}]+))[\"']?")
