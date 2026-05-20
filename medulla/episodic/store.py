@@ -137,6 +137,102 @@ def list_sessions(conn: sqlite3.Connection, project: str | None = None, limit: i
     """, (limit,)).fetchall()
 
 
+def get_session_detail(conn: sqlite3.Connection, session_id: str) -> dict | None:
+    """Return full session info plus ordered chunks."""
+    row = conn.execute("""
+        SELECT session_id, source, project_dir, git_branch, model,
+               started_at, ended_at, turn_count, tool_call_count,
+               tool_names, files_json, first_message
+        FROM sessions WHERE session_id = ?
+    """, (session_id,)).fetchone()
+    if not row:
+        return None
+
+    chunks = conn.execute("""
+        SELECT chunk_index, chunk_text, turn_start, turn_end
+        FROM session_chunks WHERE session_id = ?
+        ORDER BY chunk_index
+    """, (session_id,)).fetchall()
+
+    agents = conn.execute("""
+        SELECT agent_id, agent_slug, turn_count, tool_call_count, first_message
+        FROM agent_sessions WHERE parent_session_id = ?
+        ORDER BY first_seen_at
+    """, (session_id,)).fetchall()
+
+    return {
+        "session": dict(row),
+        "chunks": [dict(c) for c in chunks],
+        "agents": [dict(a) for a in agents],
+    }
+
+
+def get_session_tree(conn: sqlite3.Connection, session_id: str) -> dict | None:
+    """Return parent session header plus all child agent sessions."""
+    row = conn.execute("""
+        SELECT session_id, project_dir, model, started_at, turn_count,
+               tool_call_count, first_message
+        FROM sessions WHERE session_id = ?
+    """, (session_id,)).fetchone()
+    if not row:
+        return None
+
+    agents = conn.execute("""
+        SELECT agent_id, agent_slug, turn_count, tool_call_count,
+               first_message, first_seen_at
+        FROM agent_sessions WHERE parent_session_id = ?
+        ORDER BY first_seen_at
+        LIMIT 100
+    """, (session_id,)).fetchall()
+
+    return {"session": dict(row), "agents": [dict(a) for a in agents]}
+
+
+def get_project_context(
+    conn: sqlite3.Connection,
+    project: str,
+    session_limit: int = 5,
+    event_limit: int = 20,
+) -> dict:
+    """Recent sessions and tool events for a project directory."""
+    sessions = conn.execute("""
+        SELECT session_id, source, project_dir, model, started_at,
+               turn_count, tool_call_count, first_message
+        FROM sessions WHERE project_dir LIKE ?
+        ORDER BY started_at DESC LIMIT ?
+    """, (f"%{project}%", session_limit)).fetchall()
+
+    events = conn.execute("""
+        SELECT event_ts, session_id, tool, command, output_preview
+        FROM tool_events WHERE project_dir LIKE ?
+        ORDER BY event_ts DESC LIMIT ?
+    """, (f"%{project}%", event_limit)).fetchall()
+
+    return {
+        "project": project,
+        "sessions": [dict(s) for s in sessions],
+        "events": [dict(e) for e in events],
+    }
+
+
+def search_events(
+    conn: sqlite3.Connection, query: str, limit: int = 20
+) -> list[sqlite3.Row]:
+    """FTS5 search over tool_events."""
+    try:
+        fts_q = " ".join(f'"{t}"' for t in query.split() if t)
+        return conn.execute("""
+            SELECT te.event_ts, te.session_id, te.tool, te.command,
+                   te.output_preview, tef.rank
+            FROM tool_events_fts tef
+            JOIN tool_events te ON te.rowid = tef.rowid
+            WHERE tool_events_fts MATCH ?
+            ORDER BY tef.rank LIMIT ?
+        """, (fts_q, limit)).fetchall()
+    except Exception:
+        return []
+
+
 def get_stats(conn: sqlite3.Connection) -> dict:
     sessions = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
     turns = conn.execute("SELECT SUM(turn_count) FROM sessions").fetchone()[0] or 0

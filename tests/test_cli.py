@@ -149,7 +149,7 @@ def test_stats_command_after_scan(claude_projects):
 
 # ── mcp ────────────────────────────────────────────────────────────────────────
 
-def test_mcp_command_raises_not_implemented():
-    result = runner.invoke(app, ["mcp"])
-    assert result.exit_code != 0  # NotImplementedError causes non-zero exit
-    assert "Sprint 2" in result.output or "MCP" in str(result.exception)
+def test_mcp_command_is_registered():
+    """mcp command exists and is registered — full stdio test requires integration."""
+    result = runner.invoke(app, ["--help"])
+    assert "mcp" in result.output
