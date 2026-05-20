@@ -81,8 +81,20 @@ def test_tool_session_detail_shows_agents(db):
     assert "agent-mc" in result  # agent_id[:8] = "agent-mc"
 
 
+def test_tool_session_detail_prefix_lookup(db):
+    """Claude passes 8-char IDs from medulla_list — must resolve to full UUID."""
+    _setup(db)
+    result = _tool_session_detail(db, {"session_id": "sess-mcp"})  # 8-char prefix
+    assert "sess-mcp-001" in result
+
+
+def test_tool_session_detail_prefix_not_found(db):
+    result = _tool_session_detail(db, {"session_id": "zzzznothere"})
+    assert "not found" in result.lower()
+
+
 def test_tool_session_detail_not_found(db):
-    result = _tool_session_detail(db, {"session_id": "nonexistent-session"})
+    result = _tool_session_detail(db, {"session_id": "nonexistent-session-full-uuid-here"})
     assert "not found" in result.lower()
 
 
@@ -98,6 +110,18 @@ def test_tool_session_tree_found(db):
     result = _tool_session_tree(db, {"session_id": "sess-mcp-001"})
     assert "sess-mcp-001" in result
     assert "agent-mc" in result  # agent_id[:8] = "agent-mc"
+
+
+def test_tool_session_tree_prefix_lookup(db):
+    """Prefix resolution for session_tree — same bug as session_detail."""
+    _setup(db)
+    result = _tool_session_tree(db, {"session_id": "sess-mcp"})
+    assert "sess-mcp-001" in result
+
+
+def test_tool_session_tree_prefix_not_found(db):
+    result = _tool_session_tree(db, {"session_id": "zzzznothere"})
+    assert "not found" in result.lower()
 
 
 def test_tool_session_tree_no_agents(db):

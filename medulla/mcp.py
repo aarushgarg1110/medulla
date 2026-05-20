@@ -220,6 +220,15 @@ def _tool_session_detail(conn, args: dict) -> str:
     session_id = args.get("session_id", "").strip()
     if not session_id:
         return "Error: session_id is required"
+    # Resolve 8-char prefix to full UUID (Claude passes short IDs from medulla_list)
+    if len(session_id) < 36:
+        row = conn.execute(
+            "SELECT session_id FROM sessions WHERE session_id LIKE ?",
+            (f"{session_id}%",)
+        ).fetchone()
+        if not row:
+            return f"Session not found: {session_id}"
+        session_id = row["session_id"]
     detail = get_session_detail(conn, session_id)
     if not detail:
         return f"Session not found: {session_id}"
@@ -251,6 +260,14 @@ def _tool_session_tree(conn, args: dict) -> str:
     session_id = args.get("session_id", "").strip()
     if not session_id:
         return "Error: session_id is required"
+    if len(session_id) < 36:
+        row = conn.execute(
+            "SELECT session_id FROM sessions WHERE session_id LIKE ?",
+            (f"{session_id}%",)
+        ).fetchone()
+        if not row:
+            return f"Session not found: {session_id}"
+        session_id = row["session_id"]
     tree = get_session_tree(conn, session_id)
     if not tree:
         return f"Session not found: {session_id}"
