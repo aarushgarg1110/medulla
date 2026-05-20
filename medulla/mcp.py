@@ -158,41 +158,41 @@ _TOOLS = [
 
 
 @_server.list_tools()
-async def list_tools() -> list[types.Tool]:
+async def list_tools() -> list[types.Tool]:  # pragma: no cover
     return _TOOLS
 
 
 @_server.call_tool()
-async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextContent]:
+async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextContent]:  # pragma: no cover
     text = _dispatch(name, arguments)
     return [types.TextContent(type="text", text=text)]
 
 
 # ── Tool dispatch ──────────────────────────────────────────────────────────────
 
+_WIKI_STUB = "Semantic wiki layer available in Sprint 3. Run `medulla ingest <file>` to add documents."
+
+_HANDLERS: dict[str, Any] = {
+    "medulla_search": lambda conn, args: _tool_search(conn, args),
+    "medulla_session_detail": lambda conn, args: _tool_session_detail(conn, args),
+    "medulla_session_tree": lambda conn, args: _tool_session_tree(conn, args),
+    "medulla_project_context": lambda conn, args: _tool_project_context(conn, args),
+    "medulla_list": lambda conn, args: _tool_list(conn, args),
+    "medulla_stats": lambda conn, args: _tool_stats(conn),
+    "medulla_events_search": lambda conn, args: _tool_events_search(conn, args),
+    "medulla_wiki_search": lambda conn, args: _WIKI_STUB,
+    "medulla_wiki_page": lambda conn, args: _WIKI_STUB,
+    "medulla_ingest": lambda conn, args: _WIKI_STUB,
+    "medulla_analyze": lambda conn, args: _tool_analyze(conn, args),
+}
+
+
 def _dispatch(name: str, args: dict) -> str:
     conn = connect()
-    match name:
-        case "medulla_search":
-            return _tool_search(conn, args)
-        case "medulla_session_detail":
-            return _tool_session_detail(conn, args)
-        case "medulla_session_tree":
-            return _tool_session_tree(conn, args)
-        case "medulla_project_context":
-            return _tool_project_context(conn, args)
-        case "medulla_list":
-            return _tool_list(conn, args)
-        case "medulla_stats":
-            return _tool_stats(conn)
-        case "medulla_events_search":
-            return _tool_events_search(conn, args)
-        case "medulla_wiki_search" | "medulla_wiki_page" | "medulla_ingest":
-            return "Semantic wiki layer available in Sprint 3. Run `medulla ingest <file>` to add documents."
-        case "medulla_analyze":
-            return _tool_analyze(conn, args)
-        case _:
-            return f"Unknown tool: {name}"
+    handler = _HANDLERS.get(name)
+    if handler is None:
+        return f"Unknown tool: {name}"
+    return handler(conn, args)
 
 
 def _tool_search(conn, args: dict) -> str:
@@ -365,11 +365,11 @@ def _tool_analyze(conn, args: dict) -> str:
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
-def serve() -> None:
+def serve() -> None:  # pragma: no cover
     anyio.run(_serve)
 
 
-async def _serve() -> None:
+async def _serve() -> None:  # pragma: no cover
     async with stdio_server() as (read_stream, write_stream):
         await _server.run(
             read_stream,

@@ -19,5 +19,8 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev
 
-      - name: Run tests with coverage
-        run: uv run pytest tests/ --cov=medulla --cov-fail-under=95 --tb=short -q
+      - name: Run tests with coverage (statement + branch report)
+        run: uv run pytest tests/ --cov=medulla --cov-branch --cov-report=term-missing --tb=short -q
+
+      - name: Enforce statement coverage ≥ 95%
+        run: uv run pytest tests/ --cov=medulla --cov-fail-under=95 -q --no-header 2>&1 | tail -3

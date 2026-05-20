@@ -217,17 +217,20 @@ def test_tool_analyze_with_events(db):
 # ── wiki stubs ─────────────────────────────────────────────────────────────────
 
 def test_tool_wiki_search_stub(db):
-    result = _dispatch("medulla_wiki_search", {"query": "logD"})
+    from medulla.mcp import _HANDLERS, _WIKI_STUB
+    result = _HANDLERS["medulla_wiki_search"](db, {"query": "logD"})
     assert "Sprint 3" in result
 
 
 def test_tool_wiki_page_stub(db):
-    result = _dispatch("medulla_wiki_page", {"slug": "logd-prediction"})
+    from medulla.mcp import _HANDLERS, _WIKI_STUB
+    result = _HANDLERS["medulla_wiki_page"](db, {"slug": "logd-prediction"})
     assert "Sprint 3" in result
 
 
 def test_tool_ingest_stub(db):
-    result = _dispatch("medulla_ingest", {"title": "test", "content": "hello"})
+    from medulla.mcp import _HANDLERS, _WIKI_STUB
+    result = _HANDLERS["medulla_ingest"](db, {"title": "test", "content": "hello"})
     assert "Sprint 3" in result
 
 
