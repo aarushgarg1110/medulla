@@ -4,11 +4,19 @@ from __future__ import annotations
 import re
 
 
+def _ssl_verify():
+    """Respect SSL_CERT_FILE / REQUESTS_CA_BUNDLE env vars (e.g. Zscaler).
+    Falls back to True (certifi default) for users without a custom CA bundle.
+    """
+    import os
+    return os.environ.get("SSL_CERT_FILE") or os.environ.get("REQUESTS_CA_BUNDLE") or True
+
+
 def extract(url: str, max_chars: int = 50_000) -> tuple[str, str]:
     """Fetch URL and extract readable text. Returns (title, text)."""
     import httpx
     headers = {"User-Agent": "Mozilla/5.0 (compatible; Medulla/0.1)"}
-    response = httpx.get(url, headers=headers, follow_redirects=True, timeout=30.0)
+    response = httpx.get(url, headers=headers, follow_redirects=True, timeout=30.0, verify=_ssl_verify())
     response.raise_for_status()
     html = response.text
     title = _extract_title(html)

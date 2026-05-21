@@ -249,13 +249,19 @@ def status():
     else:
         console.print(f"    Queued:   none — all processed")
 
-    # Unindexed sessions
-    from medulla.episodic.scanner import CLAUDE_PROJECTS_DIR
-    jsonl_files = list(CLAUDE_PROJECTS_DIR.rglob("*.jsonl")) if CLAUDE_PROJECTS_DIR.exists() else []
+    # Sessions on disk vs indexed
+    from medulla.episodic.scanner import CLAUDE_PROJECTS_DIR, is_subagent_file
+    all_jsonl = list(CLAUDE_PROJECTS_DIR.rglob("*.jsonl")) if CLAUDE_PROJECTS_DIR.exists() else []
+    session_files = [f for f in all_jsonl if not is_subagent_file(f)]
     indexed = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+    agents_indexed = conn.execute("SELECT COUNT(*) FROM agent_sessions").fetchone()[0]
     console.print(f"\n  [bold]Sessions[/bold]")
-    console.print(f"    Indexed:  {indexed}")
-    console.print(f"    On disk:  {len(jsonl_files)} JSONL files (run [bold]medulla scan[/bold] to sync)")
+    console.print(f"    Indexed:  {indexed} sessions, {agents_indexed} subagents")
+    unindexed = len(session_files) - indexed
+    if unindexed > 0:
+        console.print(f"    On disk:  {len(session_files)} session files ({unindexed} not yet indexed — run [bold]medulla scan[/bold])")
+    else:
+        console.print(f"    On disk:  {len(session_files)} session files — all indexed ✓")
 
 
 # ── ingest ─────────────────────────────────────────────────────────────────────
@@ -317,21 +323,27 @@ def ingest(
             console.print(f"  Configure: [bold]medulla use bedrock[/bold]  then run [bold]medulla ingest[/bold]")
             return
 
-    # Process all queued files
+    # Process all queued files with live streaming output
     from medulla.semantic.store import get_pending_count
     n = get_pending_count(conn)
     if n == 0:
         console.print("[dim]Nothing queued to process.[/dim]")
         return
 
-    console.print(f"Processing {n} queued file(s)...")
-    results = process_pending(wiki_path, conn, provider_result, scope=scope)
+    console.print(f"Processing {n} queued file(s)...\n")
+
+    def _stream_token(text: str) -> None:
+        """Print LLM tokens as they arrive so the CLI doesn't look hung."""
+        print(text, end="", flush=True)
+
+    results = process_pending(wiki_path, conn, provider_result, scope=scope, on_token=_stream_token)
+    print()  # newline after streaming output
     for r in results:
         name = Path(r["source_path"]).name
         if "error" in r:
-            console.print(f"[red]✗[/red] {name}: {r['error']}")
+            console.print(f"\n[red]✗[/red] {name}: {r['error']}")
         else:
-            console.print(f"[green]✓[/green] {name} → {r['total_pages']} pages "
+            console.print(f"\n[green]✓[/green] {name} → {r['total_pages']} pages "
                           f"({', '.join(r['concepts'] + r['entities']) or 'source only'})")
 
 

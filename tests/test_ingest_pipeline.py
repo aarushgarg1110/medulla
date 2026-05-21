@@ -17,7 +17,7 @@ class MockProvider:
     @property
     def model(self): return "mock-model"
 
-    def generate(self, prompt: str, system: str | None = None) -> str:
+    def generate(self, prompt: str, system: str | None = None, on_token=None) -> str:
         return json.dumps({
             "source_page": {
                 "title": "LogD Prediction Study",

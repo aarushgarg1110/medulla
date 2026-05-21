@@ -82,6 +82,37 @@ def test_provider_name_and_model():
     assert o.model == "llama3.2"
 
 
+def test_bedrock_provider_generate_streaming(monkeypatch):
+    """Test BedrockProvider streaming path (on_token callback)."""
+    import json
+    from medulla.llm import BedrockProvider
+
+    chunks = [
+        {"type": "content_block_delta", "delta": {"text": "hello "}},
+        {"type": "content_block_delta", "delta": {"text": "world"}},
+        {"type": "message_stop"},
+    ]
+
+    class MockBody:
+        def __iter__(self):
+            for c in chunks:
+                yield {"chunk": {"bytes": json.dumps(c).encode()}}
+
+    class MockClient:
+        def invoke_model_with_response_stream(self, **kwargs):
+            return {"body": MockBody()}
+
+    class MockSession:
+        def client(self, service): return MockClient()
+
+    monkeypatch.setattr("boto3.Session", lambda **kw: MockSession())
+    provider = BedrockProvider("model", "profile", "us-east-1")
+    received = []
+    result = provider.generate("prompt", on_token=lambda t: received.append(t))
+    assert result == "hello world"
+    assert received == ["hello ", "world"]
+
+
 def test_bedrock_provider_generate(monkeypatch):
     """Mock boto3 to test BedrockProvider.generate()."""
     import json

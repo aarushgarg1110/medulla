@@ -99,6 +99,7 @@ def process_pending(
     conn: sqlite3.Connection,
     provider,
     scope: str = "personal",
+    on_token=None,
 ) -> list[dict]:
     """Process all queued raw/ files through the LLM into wiki pages.
 
@@ -110,7 +111,7 @@ def process_pending(
     for row in get_pending(conn):
         try:
             result = _process_raw_file(
-                conn, Path(row["source_path"]), wiki_path, provider, scope=scope
+                conn, Path(row["source_path"]), wiki_path, provider, scope=scope, on_token=on_token
             )
             mark_pending_done(conn, row["id"])
             result["source_path"] = row["source_path"]
@@ -128,6 +129,7 @@ def _process_raw_file(
     wiki_path: Path,
     provider,
     scope: str = "personal",
+    on_token=None,
 ) -> dict:
     """Run one raw/ file through the LLM and store wiki pages."""
     suffix = raw_path.suffix.lower()
@@ -149,7 +151,7 @@ def _process_raw_file(
         title = raw_path.stem
         source_ref = str(raw_path)
 
-    return _run_llm_pipeline(conn, text, title, wiki_path, provider, source_ref, scope)
+    return _run_llm_pipeline(conn, text, title, wiki_path, provider, source_ref, scope, on_token=on_token)
 
 
 def _extract_frontmatter_url(content: str) -> str | None:
@@ -169,6 +171,7 @@ def _run_llm_pipeline(
     provider,
     source_ref: str,
     scope: str = "personal",
+    on_token=None,
 ) -> dict:
     """Call LLM, parse response, write all wiki pages to disk + DB."""
     from medulla.semantic.wiki import (
@@ -186,7 +189,7 @@ def _run_llm_pipeline(
         today=date.today().isoformat(),
         text=text[:40_000],
     )
-    response = provider.generate(prompt, system=INGEST_SYSTEM_PROMPT)
+    response = provider.generate(prompt, system=INGEST_SYSTEM_PROMPT, on_token=on_token)
     data = _parse_llm_response(response)
 
     source_slug = slugify(title)

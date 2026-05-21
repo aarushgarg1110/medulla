@@ -11,8 +11,13 @@ from abc import ABC, abstractmethod
 
 class LLMProvider(ABC):
     @abstractmethod
-    def generate(self, prompt: str, system: str | None = None) -> str:
-        """Generate text from a prompt. Returns the response string."""
+    def generate(self, prompt: str, system: str | None = None,
+                 on_token: "Callable[[str], None] | None" = None) -> str:
+        """Generate text from a prompt. Returns the full response string.
+
+        on_token: optional callback called with each text chunk as it arrives.
+                  When provided, Bedrock uses streaming. Others ignore it.
+        """
 
     @property
     @abstractmethod
@@ -39,16 +44,35 @@ class BedrockProvider(LLMProvider):
     def model(self) -> str:
         return self._model
 
-    def generate(self, prompt: str, system: str | None = None) -> str:
+    def generate(self, prompt: str, system: str | None = None, on_token=None) -> str:
         import boto3
         session = boto3.Session(profile_name=self._profile, region_name=self._region)
         client = session.client("bedrock-runtime")
-        messages = [{"role": "user", "content": prompt}]
-        body: dict = {"messages": messages, "max_tokens": 4096, "anthropic_version": "bedrock-2023-05-31"}
+        body: dict = {
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 4096,
+            "anthropic_version": "bedrock-2023-05-31",
+        }
         if system:
             body["system"] = system
-        response = client.invoke_model(modelId=self._model, body=json.dumps(body))
-        result = json.loads(response["body"].read())
+
+        if on_token is not None:
+            # Streaming — first token arrives ~2s, rest trickle in live
+            resp = client.invoke_model_with_response_stream(
+                modelId=self._model, body=json.dumps(body)
+            )
+            parts: list[str] = []
+            for event in resp["body"]:
+                chunk = json.loads(event["chunk"]["bytes"])
+                if chunk.get("type") == "content_block_delta":
+                    text = chunk.get("delta", {}).get("text", "")
+                    if text:
+                        parts.append(text)
+                        on_token(text)
+            return "".join(parts)
+
+        resp = client.invoke_model(modelId=self._model, body=json.dumps(body))
+        result = json.loads(resp["body"].read())
         return result["content"][0]["text"]
 
 
@@ -64,9 +88,9 @@ class AnthropicProvider(LLMProvider):
     def model(self) -> str:
         return self._model
 
-    def generate(self, prompt: str, system: str | None = None) -> str:
+    def generate(self, prompt: str, system: str | None = None, on_token=None) -> str:
         import anthropic
-        client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
+        client = anthropic.Anthropic()
         kwargs: dict = {"model": self._model, "max_tokens": 4096, "messages": [{"role": "user", "content": prompt}]}
         if system:
             kwargs["system"] = system
@@ -87,7 +111,7 @@ class OllamaProvider(LLMProvider):
     def model(self) -> str:
         return self._model
 
-    def generate(self, prompt: str, system: str | None = None) -> str:
+    def generate(self, prompt: str, system: str | None = None, on_token=None) -> str:
         import httpx
         messages = []
         if system:

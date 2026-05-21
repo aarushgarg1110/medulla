@@ -63,7 +63,7 @@ def test_check_provider_success(monkeypatch):
     import medulla.llm as llm_mod
 
     class QuickProvider(OllamaProvider):
-        def generate(self, prompt, system=None): return "ok"
+        def generate(self, prompt, system=None, on_token=None): return "ok"
 
     monkeypatch.setattr(llm_mod, "get_provider", lambda: QuickProvider("m", "http://h"))
     from medulla.llm import check_provider
