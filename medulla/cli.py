@@ -417,5 +417,64 @@ def wiki_lint():
         console.print("[green]✓[/green] No orphaned pages")
 
 
+@app.command()
+def reset(
+    all_data: Annotated[bool, typer.Option("--all", help="Also wipe raw/ and episodic sessions")] = False,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation")] = False,
+):
+    """Reset wiki state for a clean slate.
+
+    Default: clears wiki pages (sources/concepts/entities), log, index.
+    Keeps raw/ so your source files aren't lost.
+    --all: also clears raw/, episodic sessions, and agent sessions.
+    """
+    from medulla.config import get_config
+    from medulla.db.database import connect
+    import shutil
+
+    cfg = get_config()
+    wiki = cfg.wiki_path
+
+    what = "wiki pages, index.md, log.md (raw/ preserved)"
+    if all_data:
+        what = "ALL wiki data including raw/, episodic sessions, agent sessions"
+
+    if not yes:
+        console.print(f"[yellow]⚠[/yellow]  This will delete: {what}")
+        console.print(f"  Wiki path: [dim]{wiki}[/dim]")
+        typer.confirm("Continue?", abort=True)
+
+    conn = connect()
+
+    # Always clear wiki layer
+    conn.execute("DELETE FROM wiki_pages")
+    conn.execute("DELETE FROM pending_ingests")
+    conn.commit()
+
+    for subdir in ["sources", "concepts", "entities"]:
+        d = wiki / subdir
+        if d.exists():
+            shutil.rmtree(d)
+
+    for f in ["index.md", "log.md"]:
+        p = wiki / f
+        if p.exists():
+            p.unlink()
+
+    if all_data:
+        raw = wiki / "raw"
+        if raw.exists():
+            shutil.rmtree(raw)
+        conn.execute("DELETE FROM sessions")
+        conn.execute("DELETE FROM session_chunks")
+        conn.execute("DELETE FROM agent_sessions")
+        conn.execute("DELETE FROM tool_events")
+        conn.commit()
+
+    console.print("[green]✓[/green] Reset complete.")
+    if not all_data:
+        console.print("  raw/ preserved — run [bold]medulla ingest[/bold] to re-process sources.")
+
+
 def main():
     app()
