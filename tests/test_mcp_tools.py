@@ -261,22 +261,68 @@ def test_tool_analyze_with_events(db):
 
 # ── wiki stubs ─────────────────────────────────────────────────────────────────
 
-def test_tool_wiki_search_stub(db):
-    from medulla.mcp import _HANDLERS, _WIKI_STUB
+def test_tool_wiki_search_empty(db):
+    from medulla.mcp import _HANDLERS
     result = _HANDLERS["medulla_wiki_search"](db, {"query": "logD"})
-    assert "Sprint 3" in result
+    assert "No wiki pages" in result or "result" in result
 
 
-def test_tool_wiki_page_stub(db):
-    from medulla.mcp import _HANDLERS, _WIKI_STUB
-    result = _HANDLERS["medulla_wiki_page"](db, {"slug": "logd-prediction"})
-    assert "Sprint 3" in result
+def test_tool_wiki_search_finds_page(db):
+    import sqlite3
+    from pathlib import Path
+    from medulla.mcp import _HANDLERS
+    from medulla.semantic.store import upsert_wiki_page
+    upsert_wiki_page(db, "logd-pred", "concept", "LogD Prediction",
+                     "LogD is a key ADMET property measuring lipophilicity.",
+                     Path("/wiki/concepts/logd-pred.md"))
+    result = _HANDLERS["medulla_wiki_search"](db, {"query": "lipophilicity"})
+    assert "logd-pred" in result or "LogD" in result
 
 
-def test_tool_ingest_stub(db):
-    from medulla.mcp import _HANDLERS, _WIKI_STUB
-    result = _HANDLERS["medulla_ingest"](db, {"title": "test", "content": "hello"})
-    assert "Sprint 3" in result
+def test_tool_wiki_search_missing_query(db):
+    from medulla.mcp import _HANDLERS
+    result = _HANDLERS["medulla_wiki_search"](db, {})
+    assert "Error" in result
+
+
+def test_tool_wiki_page_found(db):
+    from medulla.mcp import _HANDLERS
+    from medulla.semantic.store import upsert_wiki_page
+    from pathlib import Path
+    upsert_wiki_page(db, "logd-pred", "concept", "LogD Prediction",
+                     "# LogD\n\nKey ADMET property.", Path("/wiki/concepts/logd.md"))
+    result = _HANDLERS["medulla_wiki_page"](db, {"slug": "logd-pred"})
+    assert "LogD Prediction" in result
+    assert "ADMET" in result
+
+
+def test_tool_wiki_page_not_found(db):
+    from medulla.mcp import _HANDLERS
+    result = _HANDLERS["medulla_wiki_page"](db, {"slug": "nonexistent-page"})
+    assert "not found" in result.lower()
+
+
+def test_tool_wiki_page_missing_slug(db):
+    from medulla.mcp import _HANDLERS
+    result = _HANDLERS["medulla_wiki_page"](db, {})
+    assert "Error" in result
+
+
+def test_tool_ingest_mcp_with_mock(db, tmp_path, monkeypatch):
+    """medulla_ingest MCP tool with a mock provider."""
+    from tests.test_ingest_pipeline import MockProvider
+    monkeypatch.setattr("medulla.llm.get_provider", MockProvider)
+    import medulla.config as cfg
+    cfg.get_config().medulla_dir.mkdir(parents=True, exist_ok=True)
+    from medulla.mcp import _HANDLERS
+    result = _HANDLERS["medulla_ingest"](db, {"title": "Test Finding", "content": "LogD batch effects observed."})
+    assert "Ingested" in result or "page" in result.lower()
+
+
+def test_tool_ingest_missing_fields(db):
+    from medulla.mcp import _HANDLERS
+    result = _HANDLERS["medulla_ingest"](db, {"title": "Only title"})
+    assert "Error" in result
 
 
 # ── project context with events ───────────────────────────────────────────────

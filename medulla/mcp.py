@@ -176,8 +176,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextCont
 
 # ── Tool dispatch ──────────────────────────────────────────────────────────────
 
-_WIKI_STUB = "Semantic wiki layer available in Sprint 3. Run `medulla ingest <file>` to add documents."
-
 _HANDLERS: dict[str, Any] = {
     "medulla_search": lambda conn, args: _tool_search(conn, args),
     "medulla_session_detail": lambda conn, args: _tool_session_detail(conn, args),
@@ -186,9 +184,9 @@ _HANDLERS: dict[str, Any] = {
     "medulla_list": lambda conn, args: _tool_list(conn, args),
     "medulla_stats": lambda conn, args: _tool_stats(conn),
     "medulla_events_search": lambda conn, args: _tool_events_search(conn, args),
-    "medulla_wiki_search": lambda conn, args: _WIKI_STUB,
-    "medulla_wiki_page": lambda conn, args: _WIKI_STUB,
-    "medulla_ingest": lambda conn, args: _WIKI_STUB,
+    "medulla_wiki_search": lambda conn, args: _tool_wiki_search(conn, args),
+    "medulla_wiki_page": lambda conn, args: _tool_wiki_page(conn, args),
+    "medulla_ingest": lambda conn, args: _tool_ingest(conn, args),
     "medulla_analyze": lambda conn, args: _tool_analyze(conn, args),
 }
 
@@ -359,16 +357,23 @@ def _tool_list(conn, args: dict) -> str:
 
 
 def _tool_stats(conn) -> str:
+    from medulla.semantic.store import get_wiki_stats
     s = get_stats(conn)
+    ws = get_wiki_stats(conn)
     lines = [
-        f"Sessions:       {s['sessions']:,}",
-        f"Chunks:         {s['chunks']:,}",
-        f"Agent sessions: {s['agent_sessions']:,}",
-        f"Turns:          {s['turns']:,}",
-        f"Tool calls:     {s['tool_calls']:,}",
+        "Episodic:",
+        f"  Sessions:       {s['sessions']:,}",
+        f"  Chunks:         {s['chunks']:,}",
+        f"  Agent sessions: {s['agent_sessions']:,}",
+        f"  Turns:          {s['turns']:,}",
+        f"  Tool calls:     {s['tool_calls']:,}",
     ]
     if s["oldest"]:
-        lines.append(f"Date range:     {s['oldest'][:10]} → {s['newest'][:10]}")
+        lines.append(f"  Date range:     {s['oldest'][:10]} → {s['newest'][:10]}")
+    lines.append(f"\nSemantic (wiki):")
+    lines.append(f"  Pages:          {ws['total']:,}")
+    for pt, count in ws.get("by_type", {}).items():
+        lines.append(f"  {pt + 's':<15} {count:,}")
     if s["top_tools"]:
         lines.append("\nTop tools:")
         for name, count in s["top_tools"]:
@@ -389,6 +394,51 @@ def _tool_events_search(conn, args: dict) -> str:
         if r["output_preview"]:
             lines.append(f"    → {r['output_preview'][:60]}")
     return "\n".join(lines)
+
+
+def _tool_wiki_search(conn, args: dict) -> str:
+    from medulla.semantic.store import search_wiki
+    from medulla.search import _snippet
+    query = args.get("query", "").strip()
+    if not query:
+        return "Error: query is required"
+    page_type = args.get("type")
+    rows = search_wiki(conn, query, page_type=page_type, limit=args.get("limit", 10))
+    if not rows:
+        return f"No wiki pages found for: {query}"
+    lines = [f"{len(rows)} wiki page(s) for \"{query}\":\n"]
+    for row in rows:
+        lines.append(f"[{row['type']}] {row['slug']} — {row['title']}")
+        lines.append(f"  {_snippet(row['content'], 150)}\n")
+    return "\n".join(lines)
+
+
+def _tool_wiki_page(conn, args: dict) -> str:
+    from medulla.semantic.store import get_wiki_page
+    slug = args.get("slug", "").strip()
+    if not slug:
+        return "Error: slug is required"
+    row = get_wiki_page(conn, slug)
+    if not row:
+        return f"Wiki page not found: {slug}"
+    return f"# {row['title']} [{row['type']}]\n\n{row['content']}"
+
+
+def _tool_ingest(conn, args: dict) -> str:
+    title = args.get("title", "").strip()
+    content = args.get("content", "").strip()
+    if not title or not content:
+        return "Error: title and content are required"
+    try:
+        from medulla.llm import get_provider
+        from medulla.semantic.ingest import ingest_text
+        from medulla.config import get_config
+        provider = get_provider()
+        wiki_path = get_config().wiki_path
+        result = ingest_text(conn, content, title, wiki_path, provider)
+        return f"Ingested: {result['source']} ({result['total_pages']} page(s) created)"
+    except Exception as e:
+        return f"Ingest failed: {e}"
 
 
 def _tool_analyze(conn, args: dict) -> str:

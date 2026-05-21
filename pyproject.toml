@@ -5,9 +5,14 @@ description = "Three-layer memory for Claude Code and Kiro — episodic, semanti
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "anthropic>=0.103.1",
     "anyio>=4.13.0",
+    "boto3>=1.43.12",
+    "httpx>=0.28.1",
     "mcp>=1.27.1",
+    "pymupdf>=1.27.2.3",
     "rich>=15.0.0",
+    "tomli-w>=1.2.0",
     "typer>=0.25.1",
 ]
 

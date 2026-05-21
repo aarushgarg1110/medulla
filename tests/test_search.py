@@ -150,6 +150,26 @@ def test_search_finds_assistant_content(db):
     assert any(r.id == "sess-asst" for r in results2)
 
 
+def test_search_wiki_layer_returns_wiki_results(db):
+    """Search with layer=semantic returns wiki pages, not session chunks."""
+    from medulla.semantic.store import upsert_wiki_page
+    upsert_wiki_page(db, "logd-concept", "concept", "LogD Prediction",
+                     "LogD batch effect analysis in Salacia series.",
+                     __import__("pathlib").Path("/wiki/logd.md"))
+    results = search(db, "batch effect Salacia", layer="semantic")
+    assert any(r.layer == "semantic" for r in results)
+    assert any(r.result_type == "wiki_page" for r in results)
+
+
+def test_search_wiki_fts_error_returns_empty(db):
+    """_search_wiki handles OperationalError when FTS table missing."""
+    db.execute("DROP TABLE IF EXISTS wiki_fts")
+    db.commit()
+    from medulla.search import _search_wiki
+    results = _search_wiki(db, '"logD"', 10)
+    assert results == []
+
+
 def test_search_across_multiple_sessions(db):
     _insert(db, "sess-a", ["logD batch effect Salacia"])
     _insert(db, "sess-b", ["pKa basic acidic site selection"])

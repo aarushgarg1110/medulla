@@ -5,7 +5,6 @@ from typing import Annotated, Optional
 import typer
 from rich.console import Console
 from rich.table import Table
-from rich import print as rprint
 
 app = typer.Typer(
     name="medulla",
@@ -104,17 +103,26 @@ def stats():
     from medulla.db.database import connect
     from medulla.episodic.store import get_stats
 
+    from medulla.semantic.store import get_wiki_stats
     conn = connect()
     s = get_stats(conn)
+    ws = get_wiki_stats(conn)
 
     console.print(f"\n[bold]Medulla stats[/bold]")
-    console.print(f"  Sessions:      {s['sessions']:,}")
-    console.print(f"  Chunks:        {s['chunks']:,}")
-    console.print(f"  Agent sessions:{s['agent_sessions']:,}")
-    console.print(f"  Turns:         {s['turns']:,}")
-    console.print(f"  Tool calls:    {s['tool_calls']:,}")
+    console.print(f"\n  [bold]Episodic[/bold]")
+    console.print(f"    Sessions:      {s['sessions']:,}")
+    console.print(f"    Chunks:        {s['chunks']:,}")
+    console.print(f"    Agent sessions:{s['agent_sessions']:,}")
+    console.print(f"    Turns:         {s['turns']:,}")
+    console.print(f"    Tool calls:    {s['tool_calls']:,}")
     if s['oldest']:
-        console.print(f"  Date range:    {s['oldest'][:10]} → {s['newest'][:10]}")
+        console.print(f"    Date range:    {s['oldest'][:10]} → {s['newest'][:10]}")
+
+    console.print(f"\n  [bold]Semantic (wiki)[/bold]")
+    console.print(f"    Pages:         {ws['total']:,}")
+    for page_type, count in ws.get("by_type", {}).items():
+        console.print(f"    {page_type + 's':<14} {count:,}")
+
     if s['top_tools']:
         console.print(f"\n  [bold]Top tools:[/bold]")
         for name, count in s['top_tools'][:10]:
@@ -174,6 +182,215 @@ def mcp():
     """Start the MCP stdio server (for: claude mcp add medulla ...)."""
     from medulla.mcp import serve
     serve()
+
+
+# ── use ───────────────────────────────────────────────────────────────────────
+
+@app.command()
+def use(
+    provider: Annotated[str, typer.Argument(help="bedrock | anthropic | ollama")],
+):
+    """Switch the active LLM provider."""
+    valid = {"bedrock", "anthropic", "ollama"}
+    if provider not in valid:
+        console.print(f"[red]Unknown provider: {provider}. Choose: {', '.join(sorted(valid))}[/red]")
+        raise typer.Exit(1)
+    from medulla.config import set_active_provider
+    set_active_provider(provider)
+    console.print(f"[green]✓[/green] Active provider set to [bold]{provider}[/bold]")
+    console.print("  Run [bold]medulla status[/bold] to verify connectivity.")
+
+
+# ── status ─────────────────────────────────────────────────────────────────────
+
+@app.command()
+def status():
+    """Show provider, model, pending sources, and unindexed sessions."""
+    from medulla.config import get_config
+    from medulla.db.database import connect
+    from medulla.semantic.store import get_pending_count, get_wiki_stats
+    import glob, os
+
+    cfg = get_config()
+    active = cfg.llm.active
+
+    console.print(f"\n[bold]Medulla status[/bold]")
+    console.print(f"\n  [bold]LLM Provider[/bold]")
+    console.print(f"    Active:   [cyan]{active}[/cyan]")
+    if active == "bedrock":
+        console.print(f"    Model:    {cfg.llm.bedrock.model}")
+        console.print(f"    Profile:  {cfg.llm.bedrock.aws_profile}  Region: {cfg.llm.bedrock.aws_region}")
+    elif active == "anthropic":
+        console.print(f"    Model:    {cfg.llm.anthropic.model}")
+        key_set = bool(os.environ.get("ANTHROPIC_API_KEY"))
+        console.print(f"    API key:  {'[green]set[/green]' if key_set else '[red]not set[/red]'}")
+    elif active == "ollama":
+        console.print(f"    Model:    {cfg.llm.ollama.model}")
+        console.print(f"    Host:     {cfg.llm.ollama.host}")
+
+    conn = connect()
+
+    # Wiki stats
+    wiki_stats = get_wiki_stats(conn)
+    console.print(f"\n  [bold]Wiki (semantic layer)[/bold]")
+    console.print(f"    Pages:    {wiki_stats['total']} total")
+    for page_type, count in wiki_stats.get("by_type", {}).items():
+        console.print(f"              {count} {page_type}s")
+
+    # Pending ingests
+    pending = get_pending_count(conn)
+    if pending:
+        console.print(f"\n  [bold]Pending ingests[/bold]  [yellow]{pending} source(s) queued[/yellow]")
+        console.print("    Run [bold]medulla ingest --process-pending[/bold] to process them.")
+    else:
+        console.print(f"\n  [bold]Pending ingests[/bold]  none")
+
+    # Unindexed sessions
+    from medulla.episodic.scanner import CLAUDE_PROJECTS_DIR
+    jsonl_files = list(CLAUDE_PROJECTS_DIR.rglob("*.jsonl")) if CLAUDE_PROJECTS_DIR.exists() else []
+    indexed = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+    console.print(f"\n  [bold]Sessions[/bold]")
+    console.print(f"    Indexed:  {indexed}")
+    console.print(f"    On disk:  {len(jsonl_files)} JSONL files (run [bold]medulla scan[/bold] to sync)")
+
+
+# ── ingest ─────────────────────────────────────────────────────────────────────
+
+@app.command()
+def ingest(
+    source: Annotated[Optional[str], typer.Argument(help="File path or URL to ingest")] = None,
+    process_pending: Annotated[bool, typer.Option("--process-pending", help="Process all queued sources")] = False,
+    title: Annotated[Optional[str], typer.Option("--title", "-t")] = None,
+    scope: Annotated[str, typer.Option("--scope")] = "personal",
+):
+    """Ingest a source (PDF, URL, markdown) into the semantic wiki."""
+    from medulla.db.database import connect
+    from medulla.config import get_config
+
+    if not source and not process_pending:
+        console.print("[red]Provide a source path/URL or use --process-pending[/red]")
+        raise typer.Exit(1)
+
+    from pathlib import Path
+    conn = connect()
+    cfg = get_config()
+    wiki_path = cfg.wiki_path
+
+    def _get_provider():
+        try:
+            from medulla.llm import get_provider
+            return get_provider()
+        except Exception as e:
+            return None, str(e)
+
+    if process_pending:
+        from medulla.semantic.store import get_pending, mark_pending_done, mark_pending_error
+        pending = get_pending(conn)
+        if not pending:
+            console.print("[yellow]No pending sources.[/yellow]")
+            return
+        provider = _get_provider()
+        if isinstance(provider, tuple):
+            console.print(f"[red]✗ Cannot process: {provider[1]}[/red]")
+            raise typer.Exit(1)
+        for row in pending:
+            with console.status(f"Ingesting: {row['source_path']}..."):
+                try:
+                    from medulla.semantic.ingest import ingest as do_ingest
+                    result = do_ingest(conn, row["source_path"], wiki_path, provider, scope=row.get("scope","personal"))
+                    mark_pending_done(conn, row["id"])
+                    console.print(f"[green]✓[/green] {row['source_path']} → {result['total_pages']} pages")
+                except Exception as e:
+                    mark_pending_error(conn, row["id"], str(e))
+                    console.print(f"[red]✗[/red] {row['source_path']}: {e}")
+        return
+
+    # Single source
+    provider = _get_provider()
+    if isinstance(provider, tuple):
+        # Queue it instead
+        from medulla.semantic.store import queue_pending
+        source_type = "url" if source.startswith("http") else Path(source).suffix.lstrip(".") or "text"
+        queue_pending(conn, source, source_type, title)
+        console.print(f"[yellow]⚠[/yellow]  No LLM provider available: {provider[1]}")
+        console.print(f"  Source queued: [dim]{source}[/dim]")
+        console.print("  Run [bold]medulla use bedrock[/bold] then [bold]medulla ingest --process-pending[/bold]")
+        return
+
+    with console.status(f"[bold green]Ingesting {source}..."):
+        try:
+            from medulla.semantic.ingest import ingest as do_ingest
+            result = do_ingest(conn, source, wiki_path, provider, title=title, scope=scope)
+        except Exception as e:
+            console.print(f"[red]✗ Ingest failed: {e}[/red]")
+            raise typer.Exit(1)
+
+    console.print(f"[green]✓[/green] Ingested: [bold]{result['source']}[/bold]")
+    console.print(f"  Concepts: {', '.join(result['concepts']) or 'none'}")
+    console.print(f"  Entities: {', '.join(result['entities']) or 'none'}")
+    console.print(f"  Total pages created/updated: {result['total_pages']}")
+    console.print(f"  Wiki: [dim]{wiki_path}[/dim]")
+
+
+# ── wiki subcommands ───────────────────────────────────────────────────────────
+
+wiki_app = typer.Typer(help="Wiki management commands.")
+app.add_typer(wiki_app, name="wiki")
+
+
+@wiki_app.command(name="list")
+def wiki_list(
+    page_type: Annotated[Optional[str], typer.Option("--type", "-t", help="source | concept | entity")] = None,
+    limit: Annotated[int, typer.Option("--limit", "-n")] = 30,
+):
+    """List wiki pages."""
+    from medulla.db.database import connect
+    from medulla.semantic.store import list_wiki_pages
+
+    conn = connect()
+    rows = list_wiki_pages(conn, page_type=page_type, limit=limit)
+    if not rows:
+        console.print("[yellow]No wiki pages found. Run medulla ingest <source>[/yellow]")
+        return
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Type", width=8)
+    table.add_column("Slug", width=30)
+    table.add_column("Title", width=40)
+    table.add_column("Date", width=12, style="dim")
+    for row in rows:
+        table.add_row(row["type"], row["slug"][:30], row["title"][:40], (row["ingested_at"] or "")[:10])
+    console.print(table)
+
+
+@wiki_app.command(name="lint")
+def wiki_lint():
+    """Check for broken links and orphaned pages."""
+    from medulla.config import get_config
+    from medulla.semantic.wiki import lint_wiki
+
+    wiki_path = get_config().wiki_path
+    report = lint_wiki(wiki_path)
+
+    if "error" in report:
+        console.print(f"[red]{report['error']}[/red]")
+        return
+
+    console.print(f"\n[bold]Wiki lint[/bold] — {report['total_pages']} pages")
+
+    if report["broken_links"]:
+        console.print(f"\n[red]Broken links ({len(report['broken_links'])}):[/red]")
+        for link in report["broken_links"][:20]:
+            console.print(f"  {link}")
+    else:
+        console.print("[green]✓[/green] No broken links")
+
+    if report["orphaned_pages"]:
+        console.print(f"\n[yellow]Orphaned pages ({len(report['orphaned_pages'])}):[/yellow]")
+        for slug in report["orphaned_pages"][:20]:
+            console.print(f"  {slug}")
+    else:
+        console.print("[green]✓[/green] No orphaned pages")
 
 
 def main():
