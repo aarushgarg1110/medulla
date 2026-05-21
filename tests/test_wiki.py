@@ -192,6 +192,29 @@ def test_lint_detects_orphan(tmp_path):
     assert len(result["orphaned_pages"]) == 2
 
 
+# ── raw/ writing ──────────────────────────────────────────────────────────────
+
+def test_write_raw_source_creates_file(tmp_path):
+    from medulla.semantic.wiki import write_raw_source
+    wiki = tmp_path / "wiki"
+    path = write_raw_source(wiki, "logd-paper", "Raw article text here.", url="https://example.com", title="LogD Paper", source_type="url")
+    assert path.exists()
+    content = path.read_text()
+    assert "https://example.com" in content
+    assert "LogD Paper" in content
+    assert "Raw article text" in content
+
+
+def test_write_raw_source_caps_content(tmp_path):
+    from medulla.semantic.wiki import write_raw_source
+    wiki = tmp_path / "wiki"
+    long_content = "X" * 30_000
+    path = write_raw_source(wiki, "big", long_content, url="https://example.com")
+    content = path.read_text()
+    # Should be capped, not full 30K chars in body
+    assert len(content) < 25_000
+
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def test_fmt_bullets_empty():

@@ -138,15 +138,42 @@ _TOOLS = [
     ),
     types.Tool(
         name="medulla_ingest",
-        description="Write findings or notes directly into the wiki as a new source page. Available after Sprint 3.",
+        description=(
+            "Store a wiki page you have already synthesized. You (the LLM) are responsible for the synthesis. "
+            "Format content as markdown following the Medulla wiki schema:\n"
+            "---\\ntitle: ...\\ntags: [tag1, tag2]\\ndate_ingested: YYYY-MM-DD\\n---\\n"
+            "## Summary\\n## Key Points\\n## Concepts Introduced or Updated\\n"
+            "## Entities Mentioned\\n## Connections\\n## Gaps / Open Questions\\n"
+            "Use [[slug]] wikilinks for cross-references. "
+            "If you fetched the source via WebFetch, pass source_url so a raw/ backtrace file is created."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
-                "title": {"type": "string"},
-                "content": {"type": "string"},
+                "title": {"type": "string", "description": "Page title"},
+                "content": {"type": "string", "description": "Full markdown content you have synthesized"},
+                "page_type": {"type": "string", "enum": ["source", "concept", "entity"], "default": "source"},
                 "tags": {"type": "array", "items": {"type": "string"}},
+                "source_url": {"type": "string", "description": "Original URL if you fetched via WebFetch (creates raw/ backtrace)"},
             },
             "required": ["title", "content"],
+        },
+    ),
+    types.Tool(
+        name="medulla_ingest_url",
+        description=(
+            "Fetch a URL, synthesize it using the configured LLM provider, and store wiki pages. "
+            "Use this ONLY if you cannot fetch URLs yourself (no WebFetch tool). "
+            "If you have WebFetch, fetch the URL yourself, synthesize the content, and call medulla_ingest instead — "
+            "that keeps the synthesis in your context and uses the model you are already running."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to fetch and ingest"},
+                "title": {"type": "string", "description": "Optional title override"},
+            },
+            "required": ["url"],
         },
     ),
     types.Tool(
@@ -187,6 +214,7 @@ _HANDLERS: dict[str, Any] = {
     "medulla_wiki_search": lambda conn, args: _tool_wiki_search(conn, args),
     "medulla_wiki_page": lambda conn, args: _tool_wiki_page(conn, args),
     "medulla_ingest": lambda conn, args: _tool_ingest(conn, args),
+    "medulla_ingest_url": lambda conn, args: _tool_ingest_url(conn, args),
     "medulla_analyze": lambda conn, args: _tool_analyze(conn, args),
 }
 
@@ -425,20 +453,44 @@ def _tool_wiki_page(conn, args: dict) -> str:
 
 
 def _tool_ingest(conn, args: dict) -> str:
+    """Pure storage — Claude has already synthesized the content."""
     title = args.get("title", "").strip()
     content = args.get("content", "").strip()
     if not title or not content:
         return "Error: title and content are required"
     try:
+        from medulla.semantic.ingest import store_wiki_page
+        from medulla.config import get_config
+        wiki_path = get_config().wiki_path
+        result = store_wiki_page(
+            conn, wiki_path, title, content,
+            page_type=args.get("page_type", "source"),
+            tags=args.get("tags", []),
+            source_url=args.get("source_url"),
+        )
+        return f"Stored: {result['slug']} ({result['type']}) at {result['path']}"
+    except Exception as e:
+        return f"Store failed: {e}"
+
+
+def _tool_ingest_url(conn, args: dict) -> str:
+    """Fetch URL + LLM synthesis + store. For clients without WebFetch."""
+    url = args.get("url", "").strip()
+    if not url:
+        return "Error: url is required"
+    try:
         from medulla.llm import get_provider
-        from medulla.semantic.ingest import ingest_text
+        from medulla.semantic.ingest import ingest_url
         from medulla.config import get_config
         provider = get_provider()
         wiki_path = get_config().wiki_path
-        result = ingest_text(conn, content, title, wiki_path, provider)
-        return f"Ingested: {result['source']} ({result['total_pages']} page(s) created)"
+        result = ingest_url(conn, url, wiki_path, provider, title=args.get("title"))
+        return (
+            f"Ingested: {result['source']} ({result['total_pages']} pages)\n"
+            f"Raw source saved to wiki/raw/ for backtrace."
+        )
     except Exception as e:
-        return f"Ingest failed: {e}"
+        return f"Ingest URL failed: {e}"
 
 
 def _tool_analyze(conn, args: dict) -> str:

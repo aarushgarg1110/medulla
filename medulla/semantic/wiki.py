@@ -177,6 +177,44 @@ Produce a JSON object with this exact structure:
 """
 
 
+# ── Raw source storage ────────────────────────────────────────────────────────
+
+RAW_TEMPLATE = """\
+---
+url: {url}
+fetched_at: {fetched_at}
+title: {title}
+source_type: {source_type}
+---
+
+# {title}
+
+{content}
+"""
+
+
+def write_raw_source(
+    wiki_path: Path,
+    slug: str,
+    content: str,
+    url: str = "",
+    title: str = "",
+    source_type: str = "url",
+) -> Path:
+    """Write raw extracted content to wiki/raw/<slug>.md for backtrace."""
+    raw_dir = wiki_path / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    path = raw_dir / f"{slug}.md"
+    path.write_text(RAW_TEMPLATE.format(
+        url=url,
+        fetched_at=date.today().isoformat(),
+        title=title or slug,
+        source_type=source_type,
+        content=content[:20_000],  # cap raw to keep files readable
+    ))
+    return path
+
+
 # ── Slug generation ────────────────────────────────────────────────────────────
 
 def slugify(title: str) -> str:

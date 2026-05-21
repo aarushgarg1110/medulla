@@ -308,15 +308,50 @@ def test_tool_wiki_page_missing_slug(db):
     assert "Error" in result
 
 
-def test_tool_ingest_mcp_with_mock(db, tmp_path, monkeypatch):
-    """medulla_ingest MCP tool with a mock provider."""
+def test_tool_ingest_mcp_stores_directly(db, tmp_path, monkeypatch):
+    """medulla_ingest MCP tool is pure storage — no LLM call needed."""
+    import medulla.config as cfg
+    cfg.get_config().medulla_dir.mkdir(parents=True, exist_ok=True)
+    from medulla.mcp import _HANDLERS
+    content = "---\ntitle: Test Finding\n---\n\n## Summary\n\nLogD batch effects observed."
+    result = _HANDLERS["medulla_ingest"](db, {"title": "Test Finding", "content": content})
+    assert "Stored" in result or "test-finding" in result
+
+
+def test_tool_ingest_mcp_with_source_url(db, tmp_path, monkeypatch):
+    """medulla_ingest with source_url creates raw/ backtrace file."""
+    import medulla.config as cfg
+    cfg.get_config().medulla_dir.mkdir(parents=True, exist_ok=True)
+    from medulla.mcp import _HANDLERS
+    content = "---\ntitle: Paper\n---\n\n## Summary\n\nContent."
+    result = _HANDLERS["medulla_ingest"](db, {
+        "title": "Paper", "content": content,
+        "source_url": "https://example.com/paper"
+    })
+    assert "Stored" in result or "paper" in result
+
+
+def test_tool_ingest_url_with_mock(db, tmp_path, monkeypatch):
+    """medulla_ingest_url fetches URL and uses configured LLM."""
     from tests.test_ingest_pipeline import MockProvider
     monkeypatch.setattr("medulla.llm.get_provider", MockProvider)
     import medulla.config as cfg
     cfg.get_config().medulla_dir.mkdir(parents=True, exist_ok=True)
+
+    class MockResponse:
+        text = "<html><head><title>LogD Study</title></head><body><p>LogD batch effect analysis.</p></body></html>"
+        def raise_for_status(self): pass
+
+    monkeypatch.setattr("httpx.get", lambda url, **kw: MockResponse())
     from medulla.mcp import _HANDLERS
-    result = _HANDLERS["medulla_ingest"](db, {"title": "Test Finding", "content": "LogD batch effects observed."})
-    assert "Ingested" in result or "page" in result.lower()
+    result = _HANDLERS["medulla_ingest_url"](db, {"url": "https://example.com/logd"})
+    assert "Ingested" in result or "raw" in result.lower()
+
+
+def test_tool_ingest_url_missing_url(db):
+    from medulla.mcp import _HANDLERS
+    result = _HANDLERS["medulla_ingest_url"](db, {})
+    assert "Error" in result
 
 
 def test_tool_ingest_missing_fields(db):

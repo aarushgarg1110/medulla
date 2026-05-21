@@ -21,7 +21,7 @@ def ingest(
     from medulla.semantic.wiki import (
         INGEST_SYSTEM_PROMPT, INGEST_PROMPT_TEMPLATE,
         slugify, write_source_page, write_concept_page,
-        write_entity_page, update_index, append_log,
+        write_entity_page, update_index, append_log, write_raw_source,
     )
     from medulla.semantic.store import upsert_wiki_page
 
@@ -29,6 +29,14 @@ def ingest(
     source_type, raw_title, text = _extract_source(source)
 
     final_title = title or raw_title or Path(source).stem
+
+    # 1b. Write raw/ file for URLs (backtrace from wiki → raw → original source)
+    wiki_path.mkdir(parents=True, exist_ok=True)
+    if source_type == "url":
+        write_raw_source(
+            wiki_path, slugify(final_title), text,
+            url=source, title=final_title, source_type=source_type,
+        )
 
     # 2. Call LLM to generate structured wiki content
     from datetime import date
@@ -97,6 +105,75 @@ def ingest(
         "entities": entity_slugs,
         "total_pages": 1 + len(concept_slugs) + len(entity_slugs),
     }
+
+
+def ingest_url(
+    conn: sqlite3.Connection,
+    url: str,
+    wiki_path: Path,
+    provider,
+    title: str | None = None,
+    scope: str = "personal",
+) -> dict:
+    """Fetch a URL, write raw/ file, call LLM, store wiki pages.
+
+    Used by both CLI (`medulla ingest https://...`) and the
+    `medulla_ingest_url` MCP tool (for clients without WebFetch).
+    """
+    from medulla.semantic.sources.url import extract
+    from medulla.semantic.wiki import write_raw_source, slugify
+    fetch_title, text = extract(url)
+    final_title = title or fetch_title
+    slug = slugify(final_title)
+    wiki_path.mkdir(parents=True, exist_ok=True)
+    write_raw_source(wiki_path, slug, text, url=url, title=final_title, source_type="url")
+    return ingest(conn, url, wiki_path, provider, title=final_title, scope=scope)
+
+
+def store_wiki_page(
+    conn: sqlite3.Connection,
+    wiki_path: Path,
+    title: str,
+    content: str,
+    page_type: str = "source",
+    tags: list[str] | None = None,
+    source_url: str | None = None,
+    scope: str = "personal",
+) -> dict:
+    """Store Claude-synthesized content directly — no LLM call.
+
+    Used by `medulla_ingest` MCP tool when Claude has already done the synthesis.
+    If source_url provided, also writes a raw/ reference file for backtrace.
+    """
+    from medulla.semantic.wiki import (
+        slugify, write_raw_source, update_index, append_log,
+    )
+    from medulla.semantic.store import upsert_wiki_page
+    from datetime import date
+
+    slug = slugify(title)
+    wiki_path.mkdir(parents=True, exist_ok=True)
+
+    # Write the wiki page markdown
+    page_dir = wiki_path / f"{page_type}s"
+    page_dir.mkdir(exist_ok=True)
+    page_path = page_dir / f"{slug}.md"
+    page_path.write_text(content)
+
+    # Write raw/ URL reference for backtrace (when Claude used WebFetch)
+    if source_url:
+        write_raw_source(
+            wiki_path, slug,
+            f"[Source fetched by LLM — see wiki page for synthesized content]\n\nURL: {source_url}",
+            url=source_url, title=title, source_type="url",
+        )
+
+    upsert_wiki_page(conn, slug, page_type, title, content, page_path,
+                     tags=tags or [], scope=scope)
+    update_index(wiki_path, slug, page_type, title, "")
+    append_log(wiki_path, "ingest", title, f"Stored via medulla_ingest MCP tool")
+
+    return {"slug": slug, "type": page_type, "path": str(page_path)}
 
 
 def ingest_text(
