@@ -139,6 +139,31 @@ def test_get_pending_count(db):
     assert get_pending_count(db) == 2
 
 
+def test_queue_pending_idempotent_queued(db):
+    """Calling queue_pending twice for same path keeps one queued entry."""
+    id1 = queue_pending(db, "/paper.pdf", "pdf", "Paper")
+    id2 = queue_pending(db, "/paper.pdf", "pdf", "Paper")
+    assert id1 == id2
+    assert get_pending_count(db) == 1
+
+
+def test_queue_pending_resets_error_to_queued(db):
+    """Failed source auto-resets to queued on next queue_pending call."""
+    pid = queue_pending(db, "/paper.pdf", "pdf")
+    mark_pending_error(db, pid, "LLM failed")
+    assert get_pending_count(db) == 0  # errored, not queued
+    queue_pending(db, "/paper.pdf", "pdf")  # retry — resets to queued
+    assert get_pending_count(db) == 1
+
+
+def test_queue_pending_skips_done(db):
+    """Already-processed source is not re-queued."""
+    pid = queue_pending(db, "/paper.pdf", "pdf")
+    mark_pending_done(db, pid)
+    queue_pending(db, "/paper.pdf", "pdf")  # should be no-op
+    assert get_pending_count(db) == 0
+
+
 def test_mark_pending_done(db):
     pid = queue_pending(db, "/a.pdf", "pdf")
     mark_pending_done(db, pid)

@@ -97,6 +97,29 @@ def get_wiki_stats(conn: sqlite3.Connection) -> dict:
 # ── Pending ingest queue ───────────────────────────────────────────────────────
 
 def queue_pending(conn: sqlite3.Connection, source_path: str, source_type: str, title: str | None = None) -> int:
+    """Add source to pending queue. Idempotent:
+    - already queued → no-op, return existing id
+    - previously errored → reset to queued (retry)
+    - already done → no-op (don't re-process)
+    """
+    existing = conn.execute(
+        "SELECT id, status FROM pending_ingests WHERE source_path = ? ORDER BY id DESC LIMIT 1",
+        (source_path,)
+    ).fetchone()
+
+    if existing:
+        if existing["status"] == "done":
+            return existing["id"]  # already processed, skip
+        if existing["status"] == "queued":
+            return existing["id"]  # already queued, skip
+        # status == "error" → reset to queued for retry
+        conn.execute(
+            "UPDATE pending_ingests SET status='queued', error=NULL, queued_at=datetime('now') WHERE id=?",
+            (existing["id"],)
+        )
+        conn.commit()
+        return existing["id"]
+
     cur = conn.execute("""
         INSERT INTO pending_ingests (source_path, source_type, title, status, queued_at)
         VALUES (?, ?, ?, 'queued', datetime('now'))
