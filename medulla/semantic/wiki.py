@@ -136,29 +136,32 @@ Source text:
 {text}
 ---
 
-Produce a JSON object with this exact structure:
+Produce a JSON object with this exact structure.
+IMPORTANT: Include at most 3 concept_pages and at most 2 entity_pages.
+Keep each field concise (1-3 sentences max per field). This keeps the response within token limits.
+
 {{
   "source_page": {{
     "title": "...",
-    "summary": "2-4 paragraph synthesis",
-    "key_points": ["bullet 1", "bullet 2", ...],
+    "summary": "2-3 paragraph synthesis",
+    "key_points": ["bullet 1", "bullet 2", "bullet 3"],
     "concepts": ["[[concept-slug]] — one-line note", ...],
     "entities": ["[[entity-slug]] — role description", ...],
-    "connections": ["[[related-page]] — how connected", ...],
-    "gaps": ["open question 1", ...]
+    "connections": ["[[related-page]] — how connected"],
+    "gaps": ["open question 1", "open question 2"]
   }},
   "concept_pages": [
     {{
       "slug": "concept-slug",
       "title": "Concept Name",
       "tags": ["tag1", "tag2"],
-      "definition": "1-3 sentence plain-language definition",
-      "how_it_works": "concrete mechanism",
-      "why_it_matters": "practical significance",
-      "nuances": "edge cases, caveats",
-      "evidence": "examples from this source",
-      "connections": ["[[related]]", ...],
-      "open_questions": ["question 1", ...]
+      "definition": "1-2 sentence plain-language definition",
+      "how_it_works": "1-2 sentences on mechanism",
+      "why_it_matters": "1-2 sentences on significance",
+      "nuances": "1 sentence on caveats",
+      "evidence": "1 sentence example from this source",
+      "connections": ["[[related]]"],
+      "open_questions": ["question 1"]
     }}
   ],
   "entity_pages": [
@@ -168,8 +171,8 @@ Produce a JSON object with this exact structure:
       "entity_type": "person|org|tool|project|database",
       "tags": ["tag1"],
       "who_what": "1-2 sentence description",
-      "relevance": "why it matters in this wiki",
-      "contributions": ["feature 1", "feature 2"],
+      "relevance": "1 sentence on why it matters",
+      "contributions": ["key contribution"],
       "connections": ["[[related]]"]
     }}
   ]

@@ -15,6 +15,7 @@ set -uo pipefail
 export MEDULLA_DIR="${HOME}/.medulla-dev"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TEST_ASSETS="${SCRIPT_DIR}/test-assets"
 OUTPUT_DIR="${SCRIPT_DIR}/sanity-output"
 mkdir -p "$OUTPUT_DIR"
 LOGFILE="${OUTPUT_DIR}/$(date '+%Y-%m-%d-%H-%M').log"
@@ -61,6 +62,12 @@ OUT=$(medulla use ollama 2>&1)
 check_contains "medulla use ollama" "$OUT" "ollama"
 OUT=$(medulla use bedrock 2>&1)
 check_contains "medulla use bedrock (switch back)" "$OUT" "bedrock"
+
+# Sync real config to dev (model, profile, region) — dev starts with defaults after reset
+if [[ -f "${HOME}/.medulla/config.toml" ]]; then
+    cp "${HOME}/.medulla/config.toml" "${MEDULLA_DIR}/config.toml"
+    info "Synced config from ~/.medulla/config.toml to dev"
+fi
 
 # ── 2. Status ─────────────────────────────────────────────────────────────────
 
@@ -124,29 +131,22 @@ fi
 
 # ── 6. PDF ingest ─────────────────────────────────────────────────────────────
 
-section "6. PDF ingest"
+section "6. PDF ingest (Adam optimizer paper)"
 if [[ "${SKIP_INGEST:-0}" == "1" ]]; then
     skip "PDF ingest"
 else
-    # Generate a minimal test PDF using Python + PyMuPDF
-    TEST_PDF="/tmp/medulla-sanity-test.pdf"
-    python3 - << 'PYEOF'
-import fitz, sys
-doc = fitz.open()
-page = doc.new_page()
-page.insert_text((50, 72), "Neural Scaling Laws\n\nLarger models trained on more data consistently outperform smaller models. Performance scales as a power law with compute, data, and parameters. This has major implications for how AI labs allocate resources.", fontsize=12)
-doc.save("/tmp/medulla-sanity-test.pdf")
-doc.close()
-print("PDF created")
-PYEOF
-    if [[ -f "$TEST_PDF" ]]; then
-        OUT=$(medulla ingest "$TEST_PDF" 2>&1)
+    ADAM_PDF="${TEST_ASSETS}/Adam-Optimizer.pdf"
+    if [[ -f "$ADAM_PDF" ]]; then
+        OUT=$(medulla ingest "$ADAM_PDF" 2>&1)
         check_contains "PDF: copies to raw/" "$OUT" "raw/"
         check_contains "PDF: creates wiki pages" "$OUT" "pages"
-        [[ -f "${MEDULLA_DIR}/wiki/raw/medulla-sanity-test.pdf" ]] && \
-            pass "PDF archived in raw/" || fail "PDF not archived in raw/"
+        [[ -f "${MEDULLA_DIR}/wiki/raw/Adam-Optimizer.pdf" ]] && \
+            pass "PDF archived in raw/Adam-Optimizer.pdf" || fail "PDF not in raw/"
+        # Verify Adam-specific concepts were created
+        ADAM_LIST=$(medulla wiki list 2>&1)
+        check_contains "PDF: Adam concept page created" "$ADAM_LIST" "adam\|moment\|optimizer"
     else
-        fail "could not create test PDF (PyMuPDF not available?)"
+        fail "Adam-Optimizer.pdf not found in scripts/test-assets/ — run: cp ~/Downloads/Adam-Optimizer.pdf scripts/test-assets/"
     fi
 fi
 
@@ -233,10 +233,16 @@ else
     check_contains "reset --yes: completes" "$OUT" "Reset complete"
 
     WIKI_AFTER=$(medulla wiki list 2>&1)
-    if ! echo "$WIKI_AFTER" | grep -q "source\|concept\|entity"; then
-        pass "reset: wiki cleared (pages gone)"
+    # Look for Rich table border characters — present only when rows exist
+    # "No wiki pages found." has no table, just text
+    if echo "$WIKI_AFTER" | grep -q "No wiki pages\|0 total" || ! echo "$WIKI_AFTER" | grep -qP "│|\|"; then
+        pass "reset: wiki cleared (no pages)"
+    elif echo "$WIKI_AFTER" | grep -q "No wiki pages"; then
+        pass "reset: wiki cleared (no pages)"
     else
-        fail "reset: wiki still has pages"
+        # Fallback: count actual page type entries
+        PAGE_COUNT=$(echo "$WIKI_AFTER" | grep -cE "^\s*\│\s+(source|concept|entity)" || true)
+        [[ "$PAGE_COUNT" -eq 0 ]] && pass "reset: wiki cleared" || fail "reset: wiki still has $PAGE_COUNT pages"
     fi
 
     RAW_COUNT=$(ls "${MEDULLA_DIR}/wiki/raw/" 2>/dev/null | grep -v "url-references.md" | wc -l | tr -d ' ')

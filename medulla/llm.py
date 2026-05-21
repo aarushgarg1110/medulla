@@ -57,7 +57,6 @@ class BedrockProvider(LLMProvider):
             body["system"] = system
 
         if on_token is not None:
-            # Streaming — first token arrives ~2s, rest trickle in live
             resp = client.invoke_model_with_response_stream(
                 modelId=self._model, body=json.dumps(body)
             )
