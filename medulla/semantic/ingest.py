@@ -109,9 +109,14 @@ def process_pending(
 
     results = []
     for row in get_pending(conn):
+        raw_path = Path(row["source_path"])
+        if not raw_path.exists():
+            # Stale entry — raw/ file was deleted. Clean up silently.
+            mark_pending_error(conn, row["id"], "raw file no longer exists")
+            continue
         try:
             result = _process_raw_file(
-                conn, Path(row["source_path"]), wiki_path, provider, scope=scope, on_token=on_token
+                conn, raw_path, wiki_path, provider, scope=scope, on_token=on_token
             )
             mark_pending_done(conn, row["id"])
             result["source_path"] = row["source_path"]

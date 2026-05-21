@@ -241,10 +241,14 @@ def status():
     pending = get_pending_count(conn)
     raw_dir = cfg.wiki_path / "raw"
     raw_files = [f for f in raw_dir.iterdir() if f.is_file() and f.name != "url-references.md"] if raw_dir.exists() else []
+    # Cross-check: only count pending entries where the raw/ file still exists
+    valid_pending = conn.execute("""
+        SELECT COUNT(*) FROM pending_ingests WHERE status = 'queued'
+    """).fetchone()[0]
     console.print(f"\n  [bold]raw/ (intake queue)[/bold]")
     console.print(f"    Files:    {len(raw_files)} in raw/")
-    if pending:
-        console.print(f"    Queued:   [yellow]{pending} awaiting processing[/yellow]")
+    if valid_pending:
+        console.print(f"    Queued:   [yellow]{valid_pending} awaiting processing[/yellow]")
         console.print("    Run [bold]medulla ingest[/bold] to process them.")
     else:
         console.print(f"    Queued:   none — all processed")
