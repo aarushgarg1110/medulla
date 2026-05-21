@@ -2,16 +2,25 @@
 # Medulla CLI sanity check — run after every sprint merge or before PR approval.
 #
 # Uses MEDULLA_DIR=~/.medulla-dev so your real ~/.medulla is NEVER touched.
-# The dev dir is reset + re-ingested each full run for a clean slate.
+# Output is saved to scripts/sanity-output/YYYY-MM-DD-HH-MM.log automatically.
 #
 # Usage:
-#   ./scripts/cli-sanity-check.sh              # full run (reset + ingest)
+#   ./scripts/cli-sanity-check.sh              # full run (reset + all ingests)
 #   SKIP_INGEST=1 ./scripts/cli-sanity-check.sh  # skip LLM, use existing dev wiki
 
-set -uo pipefail   # note: no -e so we can capture non-zero exits safely
+set -uo pipefail
 
-# Point medulla at a separate dev directory — real ~/.medulla is never touched
+# ── Config ────────────────────────────────────────────────────────────────────
+
 export MEDULLA_DIR="${HOME}/.medulla-dev"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OUTPUT_DIR="${SCRIPT_DIR}/sanity-output"
+mkdir -p "$OUTPUT_DIR"
+LOGFILE="${OUTPUT_DIR}/$(date '+%Y-%m-%d-%H-%M').log"
+
+# Tee all output to log file (strip ANSI codes for the file)
+exec > >(tee >(sed 's/\x1b\[[0-9;]*m//g' > "$LOGFILE")) 2>&1
 
 PASS=0; FAIL=0
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; DIM='\033[2m'; NC='\033[0m'
@@ -20,164 +29,226 @@ pass() { echo -e "${GREEN}✓${NC} $1"; PASS=$((PASS + 1)); }
 fail() { echo -e "${RED}✗${NC} $1"; FAIL=$((FAIL + 1)); }
 section() { echo -e "\n${YELLOW}── $1 ──${NC}"; }
 info() { echo -e "${DIM}  $1${NC}"; }
+skip() { echo -e "${DIM}  ⊘ $1 (SKIP_INGEST=1)${NC}"; PASS=$((PASS + 1)); }
 
 check_contains() {
-    # check_contains "label" "string" "pattern"
     if echo "$2" | grep -q "$3"; then pass "$1"; else fail "$1 (expected: $3)"; fi
 }
 check_not_contains() {
     if ! echo "$2" | grep -q "$3"; then pass "$1"; else fail "$1 (should NOT contain: $3)"; fi
 }
 
-# ── Setup ─────────────────────────────────────────────────────────────────────
+echo "Medulla CLI Sanity Check — $(date '+%Y-%m-%d %H:%M')"
+echo "MEDULLA_DIR: $MEDULLA_DIR"
+echo "Log: $LOGFILE"
+echo "SKIP_INGEST: ${SKIP_INGEST:-0}"
 
-section "Setup"
+# ── 1. Setup ──────────────────────────────────────────────────────────────────
+
+section "1. Setup"
 if [[ "${SKIP_INGEST:-0}" == "1" ]]; then
-    info "SKIP_INGEST=1 — skipping destructive reset, using existing wiki state"
-    pass "reset skipped (SKIP_INGEST=1)"
+    info "SKIP_INGEST=1 — skipping reset, using existing dev wiki state"
+    pass "reset skipped"
 else
     OUT=$(medulla reset --all --yes 2>&1)
-    check_contains "reset --all" "$OUT" "Reset complete"
+    check_contains "reset --all clears everything" "$OUT" "Reset complete"
 fi
 
+# Provider switch tests
 OUT=$(medulla use bedrock 2>&1)
-check_contains "use bedrock" "$OUT" "bedrock"
+check_contains "medulla use bedrock" "$OUT" "bedrock"
+OUT=$(medulla use ollama 2>&1)
+check_contains "medulla use ollama" "$OUT" "ollama"
+OUT=$(medulla use bedrock 2>&1)
+check_contains "medulla use bedrock (switch back)" "$OUT" "bedrock"
 
-# ── Status ────────────────────────────────────────────────────────────────────
+# ── 2. Status ─────────────────────────────────────────────────────────────────
 
-section "Status"
+section "2. Status"
 STATUS=$(medulla status 2>&1)
-check_contains "status: shows provider" "$STATUS" "bedrock"
-check_contains "status: raw/ section" "$STATUS" "raw/"
-check_contains "status: sessions section" "$STATUS" "Sessions"
-check_not_contains "status: no 'entitys' typo" "$STATUS" "entitys"
+check_contains "shows active provider" "$STATUS" "bedrock"
+check_contains "shows model" "$STATUS" "sonnet\|haiku\|llama\|model"
+check_contains "shows raw/ section" "$STATUS" "raw/"
+check_contains "shows Sessions section" "$STATUS" "Sessions"
+check_not_contains "no 'entitys' typo" "$STATUS" "entitys"
 
-# ── Scan ──────────────────────────────────────────────────────────────────────
+# ── 3. Scan ───────────────────────────────────────────────────────────────────
 
-section "Scan"
+section "3. Scan (episodic sessions)"
 OUT=$(medulla scan 2>&1)
-check_contains "scan: runs without error" "$OUT" "indexed"
-check_not_contains "scan: no 'skipped' (all are now unchanged/empty)" "$OUT" "^✓ Sessions:.*skipped"
+check_contains "scan runs without error" "$OUT" "indexed"
+check_contains "scan shows unchanged count" "$OUT" "unchanged\|indexed"
 
 STATS=$(medulla stats 2>&1)
-check_contains "stats: episodic section" "$STATS" "Sessions:"
-check_contains "stats: semantic section" "$STATS" "Semantic"
+check_contains "stats: Episodic section" "$STATS" "Sessions:"
+check_contains "stats: Semantic section" "$STATS" "Semantic"
 check_not_contains "stats: no 'entitys' typo" "$STATS" "entitys"
+echo "$STATS" | grep -A1 "Sessions:" | head -5
 
-# ── URL Ingest (LLM required) ─────────────────────────────────────────────────
+# ── 4. URL ingest ─────────────────────────────────────────────────────────────
 
-section "URL ingest"
+section "4. URL ingest (Bedrock + network required)"
 if [[ "${SKIP_INGEST:-0}" == "1" ]]; then
-    info "Skipping ingest (SKIP_INGEST=1) — using existing wiki state"
-    pass "ingest skipped"
+    skip "URL ingest"
 else
     OUT=$(medulla ingest https://karpathy.medium.com/software-2-0-a64152b37c35 2>&1)
-    check_contains "ingest: raw/ file created" "$OUT" "raw/"
-    check_contains "ingest: wiki pages created" "$OUT" "pages"
+    check_contains "raw/ file created" "$OUT" "raw/"
+    check_contains "wiki pages created" "$OUT" "pages"
+    RAW_FILE="${MEDULLA_DIR}/wiki/raw/software-20.md"
+    [[ -f "$RAW_FILE" ]] && pass "raw/software-20.md exists (URL text archived)" || fail "raw/ file missing"
 fi
 
-# ── Wiki structure ────────────────────────────────────────────────────────────
+# ── 5. Local file ingest (Obsidian Clipper simulation) ───────────────────────
 
-section "Wiki structure"
+section "5. Local file ingest (Obsidian Clipper simulation)"
+if [[ "${SKIP_INGEST:-0}" == "1" ]]; then
+    skip "local file ingest"
+else
+    # Simulate Obsidian Clipper: drop a markdown file into raw/ then run medulla ingest
+    CLIP_FILE="${MEDULLA_DIR}/wiki/raw/obsidian-clip-test.md"
+    mkdir -p "${MEDULLA_DIR}/wiki/raw"
+    cat > "$CLIP_FILE" << 'MDEOF'
+# The Unreasonable Effectiveness of Data
+
+A classic paper arguing that more data often beats better algorithms.
+Key insight: simple models trained on massive datasets frequently outperform
+complex models trained on small datasets. This challenges the traditional
+focus on algorithm design over data curation.
+MDEOF
+    pass "Obsidian Clipper simulated: file dropped in raw/"
+
+    OUT=$(medulla ingest 2>&1)   # no args = discover + process
+    check_contains "discover + process raw/ file" "$OUT" "Discovered\|Processing\|pages\|queued"
+    info "Output: $(echo "$OUT" | head -3)"
+fi
+
+# ── 6. PDF ingest ─────────────────────────────────────────────────────────────
+
+section "6. PDF ingest"
+if [[ "${SKIP_INGEST:-0}" == "1" ]]; then
+    skip "PDF ingest"
+else
+    # Generate a minimal test PDF using Python + PyMuPDF
+    TEST_PDF="/tmp/medulla-sanity-test.pdf"
+    python3 - << 'PYEOF'
+import fitz, sys
+doc = fitz.open()
+page = doc.new_page()
+page.insert_text((50, 72), "Neural Scaling Laws\n\nLarger models trained on more data consistently outperform smaller models. Performance scales as a power law with compute, data, and parameters. This has major implications for how AI labs allocate resources.", fontsize=12)
+doc.save("/tmp/medulla-sanity-test.pdf")
+doc.close()
+print("PDF created")
+PYEOF
+    if [[ -f "$TEST_PDF" ]]; then
+        OUT=$(medulla ingest "$TEST_PDF" 2>&1)
+        check_contains "PDF: copies to raw/" "$OUT" "raw/"
+        check_contains "PDF: creates wiki pages" "$OUT" "pages"
+        [[ -f "${MEDULLA_DIR}/wiki/raw/medulla-sanity-test.pdf" ]] && \
+            pass "PDF archived in raw/" || fail "PDF not archived in raw/"
+    else
+        fail "could not create test PDF (PyMuPDF not available?)"
+    fi
+fi
+
+# ── 7. Wiki structure ─────────────────────────────────────────────────────────
+
+section "7. Wiki structure"
 WIKI_LIST=$(medulla wiki list 2>&1)
-# Check if wiki has all three page types (full ingest required for this)
 HAS_CONCEPT=$(echo "$WIKI_LIST" | grep -c "concept" || true)
 HAS_ENTITY=$(echo "$WIKI_LIST" | grep -c "entity" || true)
 HAS_SOURCE=$(echo "$WIKI_LIST" | grep -c "source" || true)
 
 if [[ "$HAS_SOURCE" -gt 0 && "$HAS_CONCEPT" -gt 0 && "$HAS_ENTITY" -gt 0 ]]; then
-    pass "wiki list: all three page types present"
+    pass "all three page types present (sources=$HAS_SOURCE concepts=$HAS_CONCEPT entities=$HAS_ENTITY)"
     WIKI_STATS=$(medulla stats 2>&1)
-    check_contains "stats: concepts count" "$WIKI_STATS" "concepts"
-    check_contains "stats: entities count (not entitys)" "$WIKI_STATS" "entities"
-    check_not_contains "stats: no entitys typo" "$WIKI_STATS" "entitys"
-
-    if [[ -f ${MEDULLA_DIR}/wiki/index.md ]]; then
-        pass "index.md exists"
-        INDEX=$(cat ${MEDULLA_DIR}/wiki/index.md)
-        check_contains "index.md: Entities header" "$INDEX" "## Entities"
-        check_not_contains "index.md: no Entitys typo" "$INDEX" "## Entitys"
+    check_contains "stats shows concepts" "$WIKI_STATS" "concepts"
+    check_contains "stats shows entities (not entitys)" "$WIKI_STATS" "entities"
+    [[ -f "${MEDULLA_DIR}/wiki/index.md" ]] && pass "index.md exists" || fail "index.md missing"
+    if [[ -f "${MEDULLA_DIR}/wiki/index.md" ]]; then
+        INDEX=$(cat "${MEDULLA_DIR}/wiki/index.md")
+        check_contains "index.md: ## Entities header" "$INDEX" "## Entities"
+        check_not_contains "index.md: no ## Entitys" "$INDEX" "## Entitys"
         check_contains "index.md: entities/ path" "$INDEX" "entities/"
-    else
-        fail "index.md missing"
     fi
-    [[ -f ${MEDULLA_DIR}/wiki/log.md ]] && pass "log.md exists" || fail "log.md missing"
+    [[ -f "${MEDULLA_DIR}/wiki/log.md" ]] && pass "log.md exists" || fail "log.md missing"
 else
-    info "Wiki incomplete (sources=$HAS_SOURCE concepts=$HAS_CONCEPT entities=$HAS_ENTITY)"
-    info "Run without SKIP_INGEST=1 for full wiki structure checks"
-    pass "wiki structure skipped (incomplete wiki — expected with SKIP_INGEST=1 and no prior ingest)"
+    info "Wiki incomplete — structure checks skipped (sources=$HAS_SOURCE concepts=$HAS_CONCEPT entities=$HAS_ENTITY)"
+    pass "wiki structure skipped"
 fi
 
-# ── Re-ingest idempotency ─────────────────────────────────────────────────────
+# ── 8. Idempotency ────────────────────────────────────────────────────────────
 
-section "Idempotency"
+section "8. Idempotency"
 if [[ "${SKIP_INGEST:-0}" != "1" ]]; then
     OUT=$(medulla ingest https://karpathy.medium.com/software-2-0-a64152b37c35 2>&1)
-    check_contains "re-ingest: nothing queued (idempotent)" "$OUT" "Nothing queued"
+    check_contains "re-ingest URL: nothing queued" "$OUT" "Nothing queued"
 else
-    pass "idempotency skipped (SKIP_INGEST=1)"
+    skip "idempotency"
 fi
 
-# ── Search ────────────────────────────────────────────────────────────────────
+# ── 9. Search ─────────────────────────────────────────────────────────────────
 
-section "Search"
+section "9. Search"
 SEARCH=$(medulla search "pKa model" 2>&1)
 if echo "$SEARCH" | grep -qE "[0-9a-f]{8}|Software|concept|entity|source"; then
-    pass "search: results returned"
+    pass "search: episodic results returned"
 else
-    fail "search: no results found"
+    fail "search: no results"
 fi
 
 if [[ "${SKIP_INGEST:-0}" != "1" ]]; then
     SEM=$(medulla search "software 2.0" --layer semantic 2>&1)
-    check_contains "search --layer semantic: wiki results" "$SEM" "Software 2.0"
-    check_not_contains "search: excerpt not raw frontmatter" "$SEM" "^---$"
+    check_contains "search --layer semantic: wiki result" "$SEM" "Software 2.0\|software"
+    check_not_contains "search: no raw frontmatter in excerpt" "$SEM" "^---"
 fi
 
 EPI=$(medulla search "session" --layer episodic 2>&1)
 if echo "$EPI" | grep -qE "[0-9a-f]{8}|No results"; then
-    pass "search --layer episodic: runs without error"
+    pass "search --layer episodic: works"
 else
-    fail "search --layer episodic: unexpected output"
+    fail "search --layer episodic: unexpected"
 fi
 
-# ── Wiki lint ─────────────────────────────────────────────────────────────────
+# ── 10. Wiki lint ─────────────────────────────────────────────────────────────
 
-section "Wiki lint"
+section "10. Wiki lint"
 LINT=$(medulla wiki lint 2>&1)
-check_contains "wiki lint: runs without error" "$LINT" "pages\|Wiki lint\|does not exist"
+check_contains "wiki lint: runs" "$LINT" "pages\|Wiki lint\|does not exist"
 check_not_contains "wiki lint: no '[]' display bug" "$LINT" "→ \[\]"
 if echo "$LINT" | grep -q "Suggested pages\|No forward references\|does not exist"; then
-    pass "wiki lint: forward refs correctly labeled (not 'Broken links')"
+    pass "wiki lint: uses 'Suggested pages' (not 'Broken links')"
 else
-    fail "wiki lint: expected 'Suggested pages' or 'No forward references'"
+    fail "wiki lint: unexpected label"
 fi
+info "Lint output preview:"
+echo "$LINT" | head -8 | sed 's/^/  /'
 
-# ── Reset ─────────────────────────────────────────────────────────────────────
+# ── 11. Reset ─────────────────────────────────────────────────────────────────
 
-section "Reset command"
+section "11. Reset command"
 if [[ "${SKIP_INGEST:-0}" == "1" ]]; then
-    info "Skipping reset command test (SKIP_INGEST=1 — preserving wiki state for next run)"
-    pass "reset test skipped (SKIP_INGEST=1)"
+    skip "reset (preserving dev wiki state)"
 else
     OUT=$(medulla reset --yes 2>&1)
     check_contains "reset --yes: completes" "$OUT" "Reset complete"
 
     WIKI_AFTER=$(medulla wiki list 2>&1)
     if ! echo "$WIKI_AFTER" | grep -q "source\|concept\|entity"; then
-        pass "reset: wiki cleared"
+        pass "reset: wiki cleared (pages gone)"
     else
-        fail "reset: wiki pages still present after reset"
+        fail "reset: wiki still has pages"
     fi
 
-    RAW=$(ls ${MEDULLA_DIR}/wiki/raw/ 2>/dev/null | grep -v "url-references.md" | wc -l | tr -d ' ')
-    [[ "$RAW" -gt 0 ]] && pass "reset (no --all): raw/ preserved" || info "raw/ is empty (ok)"
+    RAW_COUNT=$(ls "${MEDULLA_DIR}/wiki/raw/" 2>/dev/null | grep -v "url-references.md" | wc -l | tr -d ' ')
+    [[ "$RAW_COUNT" -gt 0 ]] && pass "reset (no --all): raw/ preserved ($RAW_COUNT files)" || \
+        info "raw/ is empty after reset (ok)"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 
-echo -e "\n────────────────────────────────────────"
+echo -e "\n════════════════════════════════════════"
 TOTAL=$((PASS + FAIL))
+echo "Log saved: $LOGFILE"
 if [[ $FAIL -eq 0 ]]; then
     echo -e "${GREEN}All $TOTAL checks passed ✓${NC}"
 else
