@@ -25,9 +25,9 @@ def test_config_loads_from_toml(tmp_path, monkeypatch):
     """Exercise the TOML loading path with a real config file."""
     import tomli_w
     import medulla.config as cfg
-    config_path = tmp_path / ".medulla" / "config.toml"
-    config_path.parent.mkdir(parents=True)
-    config_path.write_bytes(tomli_w.dumps({
+    medulla_dir = tmp_path / ".medulla"
+    medulla_dir.mkdir(parents=True)
+    (medulla_dir / "config.toml").write_bytes(tomli_w.dumps({
         "llm": {
             "active": "ollama",
             "bedrock": {"model": "b-model", "aws_profile": "test", "aws_region": "eu-west-1"},
@@ -35,7 +35,7 @@ def test_config_loads_from_toml(tmp_path, monkeypatch):
             "ollama": {"model": "o-model", "host": "http://localhost:9999"},
         }
     }).encode())
-    monkeypatch.setattr(cfg, "CONFIG_FILE", config_path)
+    monkeypatch.setenv("MEDULLA_DIR", str(medulla_dir))
     cfg._config = None
     loaded = cfg.get_config()
     assert loaded.llm.active == "ollama"

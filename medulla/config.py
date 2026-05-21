@@ -7,7 +7,13 @@ from pathlib import Path
 from typing import Any
 
 
-CONFIG_FILE = Path.home() / ".medulla" / "config.toml"
+def _default_medulla_dir() -> Path:
+    """Respect MEDULLA_DIR env var — useful for dev/test isolation."""
+    d = os.environ.get("MEDULLA_DIR")
+    return Path(d) if d else Path.home() / ".medulla"
+
+
+CONFIG_FILE = _default_medulla_dir() / "config.toml"
 
 
 @dataclass
@@ -38,7 +44,7 @@ class LLMConfig:
 
 @dataclass
 class Config:
-    medulla_dir: Path = field(default_factory=lambda: Path.home() / ".medulla")
+    medulla_dir: Path = field(default_factory=_default_medulla_dir)
     llm: LLMConfig = field(default_factory=LLMConfig)
 
     @property
@@ -66,7 +72,8 @@ def get_config() -> Config:
 
 def _load_config() -> Config:
     cfg = Config()
-    if not CONFIG_FILE.exists():
+    config_file = cfg.medulla_dir / "config.toml"
+    if not config_file.exists():
         return cfg
     try:
         import tomllib  # Python 3.11+
@@ -76,7 +83,7 @@ def _load_config() -> Config:
         except ImportError:
             return cfg
     try:
-        data = tomllib.loads(CONFIG_FILE.read_text())
+        data = tomllib.loads(config_file.read_text())
         llm_data = data.get("llm", {})
         cfg.llm.active = llm_data.get("active", cfg.llm.active)
         bd = llm_data.get("bedrock", {})

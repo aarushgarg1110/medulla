@@ -5,7 +5,7 @@ import pytest
 def test_get_provider_bedrock(monkeypatch):
     import medulla.config as cfg_module
     cfg_module._config = None
-    monkeypatch.setattr(cfg_module, "CONFIG_FILE", __import__("pathlib").Path("/nonexistent/config.toml"))
+    monkeypatch.setenv("MEDULLA_DIR", "/tmp/nonexistent-medulla")
     from medulla.config import get_config
     cfg = get_config()
     cfg.llm.active = "bedrock"
@@ -18,7 +18,7 @@ def test_get_provider_bedrock(monkeypatch):
 def test_get_provider_anthropic_no_key(monkeypatch):
     import medulla.config as cfg_module
     cfg_module._config = None
-    monkeypatch.setattr(cfg_module, "CONFIG_FILE", __import__("pathlib").Path("/nonexistent"))
+    monkeypatch.setenv("MEDULLA_DIR", "/tmp/nonexistent-medulla")
     from medulla.config import get_config
     cfg = get_config()
     cfg.llm.active = "anthropic"
@@ -31,7 +31,7 @@ def test_get_provider_anthropic_no_key(monkeypatch):
 def test_get_provider_anthropic_with_key(monkeypatch):
     import medulla.config as cfg_module
     cfg_module._config = None
-    monkeypatch.setattr(cfg_module, "CONFIG_FILE", __import__("pathlib").Path("/nonexistent"))
+    monkeypatch.setenv("MEDULLA_DIR", "/tmp/nonexistent-medulla")
     from medulla.config import get_config
     cfg = get_config()
     cfg.llm.active = "anthropic"
@@ -45,7 +45,7 @@ def test_get_provider_anthropic_with_key(monkeypatch):
 def test_get_provider_ollama(monkeypatch):
     import medulla.config as cfg_module
     cfg_module._config = None
-    monkeypatch.setattr(cfg_module, "CONFIG_FILE", __import__("pathlib").Path("/nonexistent"))
+    monkeypatch.setenv("MEDULLA_DIR", "/tmp/nonexistent-medulla")
     from medulla.config import get_config
     cfg = get_config()
     cfg.llm.active = "ollama"
@@ -58,7 +58,7 @@ def test_get_provider_ollama(monkeypatch):
 def test_get_provider_unknown_raises(monkeypatch):
     import medulla.config as cfg_module
     cfg_module._config = None
-    monkeypatch.setattr(cfg_module, "CONFIG_FILE", __import__("pathlib").Path("/nonexistent"))
+    monkeypatch.setenv("MEDULLA_DIR", "/tmp/nonexistent-medulla")
     from medulla.config import get_config
     cfg = get_config()
     cfg.llm.active = "unknown-provider"
