@@ -348,7 +348,8 @@ def update_index(wiki_path: Path, slug: str, page_type: str, title: str, summary
         index_path.write_text("# Wiki Index\n\nContent catalog. Updated on every ingest.\n\n")
     content = index_path.read_text()
     # Use a unique anchor pattern to detect existing entries
-    entry_anchor = f"[[{page_type}s/{slug}|{slug}]]"
+    _DIR = {"source": "sources", "concept": "concepts", "entity": "entities"}
+    entry_anchor = f"[[{_DIR.get(page_type, page_type + 's')}/{slug}|{slug}]]"
     if entry_anchor in content:
         return  # already indexed, skip
     entry = f"| {entry_anchor} | {summary_line[:80]} |\n"
