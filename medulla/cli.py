@@ -237,13 +237,17 @@ def status():
     for page_type, count in wiki_stats.get("by_type", {}).items():
         console.print(f"              {count} {page_type}s")
 
-    # Pending ingests
+    # Pending ingests (raw/ files not yet processed)
     pending = get_pending_count(conn)
+    raw_dir = cfg.wiki_path / "raw"
+    raw_files = [f for f in raw_dir.iterdir() if f.is_file() and f.name != "url-references.md"] if raw_dir.exists() else []
+    console.print(f"\n  [bold]raw/ (intake queue)[/bold]")
+    console.print(f"    Files:    {len(raw_files)} in raw/")
     if pending:
-        console.print(f"\n  [bold]Pending ingests[/bold]  [yellow]{pending} source(s) queued[/yellow]")
-        console.print("    Run [bold]medulla ingest --process-pending[/bold] to process them.")
+        console.print(f"    Queued:   [yellow]{pending} awaiting processing[/yellow]")
+        console.print("    Run [bold]medulla ingest[/bold] to process them.")
     else:
-        console.print(f"\n  [bold]Pending ingests[/bold]  none")
+        console.print(f"    Queued:   none — all processed")
 
     # Unindexed sessions
     from medulla.episodic.scanner import CLAUDE_PROJECTS_DIR
@@ -258,20 +262,20 @@ def status():
 
 @app.command()
 def ingest(
-    source: Annotated[Optional[str], typer.Argument(help="File path or URL to ingest")] = None,
-    process_pending: Annotated[bool, typer.Option("--process-pending", help="Process all queued sources")] = False,
+    source: Annotated[Optional[str], typer.Argument(help="File path or URL. Omit to process everything in raw/")] = None,
     title: Annotated[Optional[str], typer.Option("--title", "-t")] = None,
     scope: Annotated[str, typer.Option("--scope")] = "personal",
 ):
-    """Ingest a source (PDF, URL, markdown) into the semantic wiki."""
+    """Ingest sources into the semantic wiki via raw/.
+
+    No args: discover new files in raw/ + process all queued.
+    With path/URL: copy/fetch to raw/ then process immediately.
+    """
+    from pathlib import Path
     from medulla.db.database import connect
     from medulla.config import get_config
+    from medulla.semantic.ingest import intake_to_raw, discover_raw, process_pending
 
-    if not source and not process_pending:
-        console.print("[red]Provide a source path/URL or use --process-pending[/red]")
-        raise typer.Exit(1)
-
-    from pathlib import Path
     conn = connect()
     cfg = get_config()
     wiki_path = cfg.wiki_path
@@ -283,53 +287,52 @@ def ingest(
         except Exception as e:
             return None, str(e)
 
-    if process_pending:
-        from medulla.semantic.store import get_pending, mark_pending_done, mark_pending_error
-        pending = get_pending(conn)
-        if not pending:
-            console.print("[yellow]No pending sources.[/yellow]")
+    provider_result = _get_provider()
+    has_provider = not isinstance(provider_result, tuple)
+
+    if source:
+        # Intake to raw/ first (copy/fetch)
+        with console.status(f"Copying to raw/: {source}"):
+            try:
+                raw_path = intake_to_raw(conn, wiki_path, source, title)
+                console.print(f"[dim]→ raw/{raw_path.name}[/dim]")
+            except Exception as e:
+                console.print(f"[red]✗ Failed: {e}[/red]")
+                raise typer.Exit(1)
+
+        if not has_provider:
+            console.print(f"[yellow]⚠[/yellow]  No LLM provider — queued in raw/")
+            console.print(f"  Configure: [bold]medulla use bedrock[/bold]  then run [bold]medulla ingest[/bold]")
             return
-        provider = _get_provider()
-        if isinstance(provider, tuple):
-            console.print(f"[red]✗ Cannot process: {provider[1]}[/red]")
-            raise typer.Exit(1)
-        for row in pending:
-            with console.status(f"Ingesting: {row['source_path']}..."):
-                try:
-                    from medulla.semantic.ingest import ingest as do_ingest
-                    result = do_ingest(conn, row["source_path"], wiki_path, provider, scope=row.get("scope","personal"))
-                    mark_pending_done(conn, row["id"])
-                    console.print(f"[green]✓[/green] {row['source_path']} → {result['total_pages']} pages")
-                except Exception as e:
-                    mark_pending_error(conn, row["id"], str(e))
-                    console.print(f"[red]✗[/red] {row['source_path']}: {e}")
+    else:
+        # Discover any files dropped in raw/ (Obsidian Clipper, manual)
+        new = discover_raw(wiki_path, conn)
+        if new:
+            console.print(f"[dim]Discovered {len(new)} new file(s) in raw/[/dim]")
+
+        if not has_provider:
+            from medulla.semantic.store import get_pending_count
+            n = get_pending_count(conn)
+            console.print(f"[yellow]⚠[/yellow]  No LLM provider — {n} file(s) queued in raw/")
+            console.print(f"  Configure: [bold]medulla use bedrock[/bold]  then run [bold]medulla ingest[/bold]")
+            return
+
+    # Process all queued files
+    from medulla.semantic.store import get_pending_count
+    n = get_pending_count(conn)
+    if n == 0:
+        console.print("[dim]Nothing queued to process.[/dim]")
         return
 
-    # Single source
-    provider = _get_provider()
-    if isinstance(provider, tuple):
-        # Queue it instead
-        from medulla.semantic.store import queue_pending
-        source_type = "url" if source.startswith("http") else Path(source).suffix.lstrip(".") or "text"
-        queue_pending(conn, source, source_type, title)
-        console.print(f"[yellow]⚠[/yellow]  No LLM provider available: {provider[1]}")
-        console.print(f"  Source queued: [dim]{source}[/dim]")
-        console.print("  Run [bold]medulla use bedrock[/bold] then [bold]medulla ingest --process-pending[/bold]")
-        return
-
-    with console.status(f"[bold green]Ingesting {source}..."):
-        try:
-            from medulla.semantic.ingest import ingest as do_ingest
-            result = do_ingest(conn, source, wiki_path, provider, title=title, scope=scope)
-        except Exception as e:
-            console.print(f"[red]✗ Ingest failed: {e}[/red]")
-            raise typer.Exit(1)
-
-    console.print(f"[green]✓[/green] Ingested: [bold]{result['source']}[/bold]")
-    console.print(f"  Concepts: {', '.join(result['concepts']) or 'none'}")
-    console.print(f"  Entities: {', '.join(result['entities']) or 'none'}")
-    console.print(f"  Total pages created/updated: {result['total_pages']}")
-    console.print(f"  Wiki: [dim]{wiki_path}[/dim]")
+    console.print(f"Processing {n} queued file(s)...")
+    results = process_pending(wiki_path, conn, provider_result, scope=scope)
+    for r in results:
+        name = Path(r["source_path"]).name
+        if "error" in r:
+            console.print(f"[red]✗[/red] {name}: {r['error']}")
+        else:
+            console.print(f"[green]✓[/green] {name} → {r['total_pages']} pages "
+                          f"({', '.join(r['concepts'] + r['entities']) or 'source only'})")
 
 
 # ── wiki subcommands ───────────────────────────────────────────────────────────

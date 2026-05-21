@@ -143,26 +143,27 @@ def test_session_detail_project_dir_shown(tmp_path, monkeypatch):
 # ── ingest.py — ingest_text edge cases (149, 157-159, 170-171) ───────────────
 
 def test_ingest_text_indexes_to_db(tmp_path):
-    import json
+    """store_wiki_page is the replacement for ingest_text (pure storage)."""
     from tests.test_ingest_pipeline import MockProvider
     from medulla.db.database import connect
-    from medulla.semantic.ingest import ingest_text
+    from medulla.semantic.ingest import store_wiki_page
     from medulla.semantic.store import get_wiki_page
     conn = connect(tmp_path / "test.db")
     wiki = tmp_path / "wiki"
-    result = ingest_text(conn, "LogD measurements showed batch effects.", "Batch Effect Notes", wiki, MockProvider())
-    assert result["source"] == "batch-effect-notes"
+    result = store_wiki_page(conn, wiki, "Batch Effect Notes",
+                              "---\ntitle: Batch Effect Notes\n---\n\n## Summary\n\nLogD batch effects.")
+    assert result["slug"] == "batch-effect-notes"
     page = get_wiki_page(conn, "batch-effect-notes")
     assert page is not None
 
 
 def test_ingest_pdf_source(tmp_path):
-    """Test _extract_source dispatches to pdf extractor."""
+    """Test PDF intake + process via new flow."""
     pytest.importorskip("fitz")
     import fitz
     from tests.test_ingest_pipeline import MockProvider
     from medulla.db.database import connect
-    from medulla.semantic.ingest import ingest
+    from medulla.semantic.ingest import intake_to_raw, process_pending
 
     doc = fitz.open()
     page = doc.new_page()
@@ -173,5 +174,7 @@ def test_ingest_pdf_source(tmp_path):
 
     conn = connect(tmp_path / "test.db")
     wiki = tmp_path / "wiki"
-    result = ingest(conn, str(pdf_path), wiki, MockProvider())
-    assert result["total_pages"] >= 1
+    intake_to_raw(conn, wiki, str(pdf_path))
+    results = process_pending(wiki, conn, MockProvider())
+    assert len(results) == 1
+    assert results[0]["total_pages"] >= 1

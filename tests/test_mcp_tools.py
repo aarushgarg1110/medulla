@@ -360,6 +360,48 @@ def test_tool_ingest_missing_fields(db):
     assert "Error" in result
 
 
+def _make_cfg(tmp_path):
+    import medulla.config as cfg
+    c = cfg.Config(medulla_dir=tmp_path / ".medulla")
+    return c
+
+
+def test_tool_list_raw_empty(db, tmp_path, monkeypatch):
+    c = _make_cfg(tmp_path)
+    import medulla.config as cfg_mod
+    monkeypatch.setattr(cfg_mod, "get_config", lambda: c)
+    from medulla.mcp import _tool_list_raw
+    result = _tool_list_raw(db, {})
+    assert "empty" in result.lower() or "no files" in result.lower()
+
+
+def test_tool_list_raw_with_files(db, tmp_path, monkeypatch):
+    c = _make_cfg(tmp_path)
+    raw = c.wiki_path / "raw"
+    raw.mkdir(parents=True)
+    (raw / "paper.md").write_text("# Paper\nContent.")
+    import medulla.config as cfg_mod
+    monkeypatch.setattr(cfg_mod, "get_config", lambda: c)
+    from medulla.mcp import _tool_list_raw
+    result = _tool_list_raw(db, {})
+    assert "paper.md" in result
+
+
+def test_tool_list_raw_shows_queued_vs_processed(db, tmp_path, monkeypatch):
+    from medulla.semantic.store import queue_pending
+    c = _make_cfg(tmp_path)
+    raw = c.wiki_path / "raw"
+    raw.mkdir(parents=True)
+    paper = raw / "unprocessed.md"
+    paper.write_text("# Unprocessed\nContent.")
+    queue_pending(db, str(paper), "md", "Unprocessed")
+    import medulla.config as cfg_mod
+    monkeypatch.setattr(cfg_mod, "get_config", lambda: c)
+    from medulla.mcp import _tool_list_raw
+    result = _tool_list_raw(db, {})
+    assert "queued" in result.lower() or "⏳" in result
+
+
 # ── project context with events ───────────────────────────────────────────────
 
 def test_tool_project_context_shows_events(db):

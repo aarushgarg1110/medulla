@@ -59,10 +59,10 @@ def test_status_shows_wiki_section():
     assert "Wiki" in result.output or "wiki" in result.output
 
 
-def test_status_shows_pending_none():
+def test_status_shows_raw_section():
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 0
-    assert "Pending" in result.output or "pending" in result.output
+    assert "raw" in result.output.lower() or "intake" in result.output.lower()
 
 
 def test_status_shows_pending_count(tmp_path, monkeypatch):
@@ -111,31 +111,41 @@ def test_ingest_with_mock_provider(tmp_path, monkeypatch):
     assert "Ingested" in result.output or "pages" in result.output.lower()
 
 
-def test_ingest_process_pending_with_mock(tmp_path, monkeypatch):
-    """--process-pending processes queued sources."""
+def test_ingest_processes_queued_on_no_args(tmp_path, monkeypatch):
+    """medulla ingest with no args processes queued raw/ files."""
     import medulla.config as cfg
-    conn = __import__("medulla.db.database", fromlist=["connect"]).connect(cfg.get_config().db_path)
-    from medulla.semantic.store import queue_pending
-    md = tmp_path / "queued.md"
-    md.write_text("# Queued Paper\n\nContent.")
-    queue_pending(conn, str(md), "markdown", "Queued Paper")
-    conn.close()
+    wiki = cfg.get_config().wiki_path
+    wiki.mkdir(parents=True)
+    (wiki / "raw").mkdir()
+    md = wiki / "raw" / "queued.md"
+    md.write_text("# Queued Paper\n\nContent about logD.")
 
     from tests.test_ingest_pipeline import MockProvider
     monkeypatch.setattr("medulla.llm.get_provider", MockProvider)
-    result = runner.invoke(app, ["ingest", "--process-pending"])
-    assert result.exit_code == 0
-
-
-def test_ingest_no_source_no_flag():
     result = runner.invoke(app, ["ingest"])
-    assert result.exit_code == 1
-
-
-def test_ingest_process_pending_none():
-    result = runner.invoke(app, ["ingest", "--process-pending"])
     assert result.exit_code == 0
-    assert "No pending" in result.output
+
+
+def test_ingest_no_source_processes_raw():
+    """medulla ingest with no args is valid — discovers + processes raw/."""
+    result = runner.invoke(app, ["ingest"])
+    assert result.exit_code == 0
+    # Nothing queued yet — should say so
+    assert "Nothing" in result.output or "queued" in result.output or "0" in result.output
+
+
+def test_ingest_no_source_with_provider_discovers(tmp_path, monkeypatch):
+    """With files in raw/, medulla ingest discovers and processes them."""
+    import medulla.config as cfg
+    wiki = cfg.get_config().wiki_path
+    wiki.mkdir(parents=True)
+    (wiki / "raw").mkdir()
+    (wiki / "raw" / "article.md").write_text("# Article\n\nContent about logD.")
+
+    from tests.test_ingest_pipeline import MockProvider
+    monkeypatch.setattr("medulla.llm.get_provider", MockProvider)
+    result = runner.invoke(app, ["ingest"])
+    assert result.exit_code == 0
 
 
 # ── medulla wiki list ─────────────────────────────────────────────────────────

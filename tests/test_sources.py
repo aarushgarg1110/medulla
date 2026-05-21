@@ -123,20 +123,26 @@ def test_parse_llm_response_bad_json_returns_fallback():
     assert "source_page" in result
 
 
-def test_extract_source_unsupported_file(tmp_path):
-    from medulla.semantic.ingest import _extract_source
-    import pytest
-    bad = tmp_path / "test.xyz"
-    bad.write_text("content")
-    # Should try as plain text and succeed
-    source_type, title, text = _extract_source(str(bad))
-    assert "content" in text
+def test_intake_unknown_extension_copies_to_raw(tmp_path):
+    """Unknown file extension: intake_to_raw copies it to raw/ as-is."""
+    from medulla.db.database import connect
+    from medulla.semantic.ingest import intake_to_raw
+    conn = connect(tmp_path / "test.db")
+    wiki = tmp_path / "wiki"
+    bad = tmp_path / "data.csv"
+    bad.write_text("compound,logD\nchemblA,2.3")
+    raw_path = intake_to_raw(conn, wiki, str(bad))
+    assert raw_path.exists()
+    assert raw_path.name == "data.csv"
 
 
-def test_extract_source_missing_file():
-    from medulla.semantic.ingest import _extract_source
+def test_intake_missing_file_raises(tmp_path):
+    from medulla.db.database import connect
+    from medulla.semantic.ingest import intake_to_raw
+    conn = connect(tmp_path / "test.db")
+    wiki = tmp_path / "wiki"
     with pytest.raises(ValueError, match="File not found"):
-        _extract_source("/nonexistent/path/file.pdf")
+        intake_to_raw(conn, wiki, "/nonexistent/path/file.pdf")
 
 
 def test_url_extract_mocked(monkeypatch):

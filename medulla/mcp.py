@@ -177,6 +177,16 @@ _TOOLS = [
         },
     ),
     types.Tool(
+        name="medulla_list_raw",
+        description=(
+            "List files in wiki/raw/ that haven't been processed yet. "
+            "Use this to see what's available for ingestion — files dropped by Obsidian Clipper, "
+            "PDFs placed manually, or URL text fetched by medulla. "
+            "You can then read a file from raw/ and call medulla_ingest with your synthesis."
+        ),
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    types.Tool(
         name="medulla_analyze",
         description="Manifest quality analysis: retry rates, help-followup rates, error rates per tool manifest.",
         inputSchema={
@@ -215,6 +225,7 @@ _HANDLERS: dict[str, Any] = {
     "medulla_wiki_page": lambda conn, args: _tool_wiki_page(conn, args),
     "medulla_ingest": lambda conn, args: _tool_ingest(conn, args),
     "medulla_ingest_url": lambda conn, args: _tool_ingest_url(conn, args),
+    "medulla_list_raw": lambda conn, args: _tool_list_raw(conn, args),
     "medulla_analyze": lambda conn, args: _tool_analyze(conn, args),
 }
 
@@ -474,23 +485,45 @@ def _tool_ingest(conn, args: dict) -> str:
 
 
 def _tool_ingest_url(conn, args: dict) -> str:
-    """Fetch URL + LLM synthesis + store. For clients without WebFetch."""
+    """Fetch URL → raw/ → LLM → wiki pages. For clients without WebFetch."""
     url = args.get("url", "").strip()
     if not url:
         return "Error: url is required"
     try:
         from medulla.llm import get_provider
-        from medulla.semantic.ingest import ingest_url
+        from medulla.semantic.ingest import ingest_url_mcp
         from medulla.config import get_config
         provider = get_provider()
         wiki_path = get_config().wiki_path
-        result = ingest_url(conn, url, wiki_path, provider, title=args.get("title"))
+        result = ingest_url_mcp(conn, url, wiki_path, provider, title=args.get("title"))
         return (
-            f"Ingested: {result['source']} ({result['total_pages']} pages)\n"
-            f"Raw source saved to wiki/raw/ for backtrace."
+            f"Ingested: {result.get('source', '?')} ({result.get('total_pages', 0)} pages)\n"
+            f"Raw text saved to wiki/raw/ for backtrace."
         )
     except Exception as e:
         return f"Ingest URL failed: {e}"
+
+
+def _tool_list_raw(conn, args: dict) -> str:
+    """List unprocessed files in wiki/raw/."""
+    from medulla.config import get_config
+    from medulla.semantic.store import get_pending
+    wiki_path = get_config().wiki_path
+    raw_dir = wiki_path / "raw"
+    if not raw_dir.exists():
+        return "wiki/raw/ is empty — no files to ingest yet."
+    skip = {"url-references.md"}
+    all_files = [f for f in sorted(raw_dir.iterdir()) if f.is_file() and f.name not in skip]
+    if not all_files:
+        return "wiki/raw/ is empty — no files to ingest yet."
+    pending = {row["source_path"] for row in get_pending(conn)}
+    lines = [f"{len(all_files)} file(s) in wiki/raw/:\n"]
+    for f in all_files:
+        status = "⏳ queued" if str(f) in pending else "✓ processed"
+        lines.append(f"  {status}  {f.name}")
+    lines.append("\nTo ingest a file: read it and call medulla_ingest with your synthesis.")
+    lines.append("Or call medulla_ingest_url(url) for URL sources if you lack WebFetch.")
+    return "\n".join(lines)
 
 
 def _tool_analyze(conn, args: dict) -> str:
