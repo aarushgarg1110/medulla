@@ -201,7 +201,11 @@ def write_raw_source(
     title: str = "",
     source_type: str = "url",
 ) -> Path:
-    """Write raw extracted content to wiki/raw/<slug>.md for backtrace."""
+    """Write raw extracted content to wiki/raw/<slug>.md for backtrace.
+
+    Use when medulla itself fetched the content (CLI url, medulla_ingest_url).
+    Has actual extracted text so the raw file is genuinely useful.
+    """
     raw_dir = wiki_path / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
     path = raw_dir / f"{slug}.md"
@@ -210,9 +214,40 @@ def write_raw_source(
         fetched_at=date.today().isoformat(),
         title=title or slug,
         source_type=source_type,
-        content=content[:20_000],  # cap raw to keep files readable
+        content=content[:20_000],
     ))
     return path
+
+
+def append_url_reference(
+    wiki_path: Path,
+    slug: str,
+    url: str,
+    title: str = "",
+) -> Path:
+    """Append a URL reference to wiki/raw/url-references.md.
+
+    Use when Claude fetched the URL via WebFetch and passed source_url to
+    medulla_ingest. We don't have the raw text, just the URL. Rather than
+    20 near-empty files, one running log keeps it clean.
+    """
+    raw_dir = wiki_path / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    log_path = raw_dir / "url-references.md"
+    if not log_path.exists():
+        log_path.write_text(
+            "# URL References\n\n"
+            "Sources ingested via WebFetch in Claude Code / Kiro sessions.\n"
+            "Format: `## [YYYY-MM-DD] slug`\n\n"
+        )
+    entry = (
+        f"## [{date.today().isoformat()}] {slug}\n"
+        f"URL: {url}\n"
+        f"Title: {title or slug}\n"
+        f"Wiki: [[sources/{slug}]]\n\n"
+    )
+    log_path.write_text(log_path.read_text() + entry)
+    return log_path
 
 
 # ── Slug generation ────────────────────────────────────────────────────────────

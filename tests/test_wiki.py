@@ -195,10 +195,12 @@ def test_lint_detects_orphan(tmp_path):
 # ── raw/ writing ──────────────────────────────────────────────────────────────
 
 def test_write_raw_source_creates_file(tmp_path):
+    """CLI/medulla_ingest_url path: full extracted text stored per URL."""
     from medulla.semantic.wiki import write_raw_source
     wiki = tmp_path / "wiki"
     path = write_raw_source(wiki, "logd-paper", "Raw article text here.", url="https://example.com", title="LogD Paper", source_type="url")
     assert path.exists()
+    assert path.name == "logd-paper.md"
     content = path.read_text()
     assert "https://example.com" in content
     assert "LogD Paper" in content
@@ -208,11 +210,36 @@ def test_write_raw_source_creates_file(tmp_path):
 def test_write_raw_source_caps_content(tmp_path):
     from medulla.semantic.wiki import write_raw_source
     wiki = tmp_path / "wiki"
-    long_content = "X" * 30_000
-    path = write_raw_source(wiki, "big", long_content, url="https://example.com")
-    content = path.read_text()
-    # Should be capped, not full 30K chars in body
-    assert len(content) < 25_000
+    path = write_raw_source(wiki, "big", "X" * 30_000, url="https://example.com")
+    assert len(path.read_text()) < 25_000
+
+
+def test_append_url_reference_single_log(tmp_path):
+    """MCP/WebFetch path: URLs appended to one shared log, not individual files."""
+    from medulla.semantic.wiki import append_url_reference
+    wiki = tmp_path / "wiki"
+    append_url_reference(wiki, "paper-a", "https://example.com/a", title="Paper A")
+    append_url_reference(wiki, "paper-b", "https://example.com/b", title="Paper B")
+    append_url_reference(wiki, "paper-c", "https://example.com/c", title="Paper C")
+
+    log = wiki / "raw" / "url-references.md"
+    assert log.exists()
+    # Only ONE file, not three
+    raw_files = list((wiki / "raw").iterdir())
+    assert len(raw_files) == 1
+    content = log.read_text()
+    assert "paper-a" in content
+    assert "paper-b" in content
+    assert "paper-c" in content
+    assert "https://example.com/a" in content
+
+
+def test_append_url_reference_creates_header(tmp_path):
+    from medulla.semantic.wiki import append_url_reference
+    wiki = tmp_path / "wiki"
+    append_url_reference(wiki, "test-slug", "https://example.com")
+    content = (wiki / "raw" / "url-references.md").read_text()
+    assert "# URL References" in content
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────

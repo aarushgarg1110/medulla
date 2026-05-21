@@ -21,7 +21,8 @@ def ingest(
     from medulla.semantic.wiki import (
         INGEST_SYSTEM_PROMPT, INGEST_PROMPT_TEMPLATE,
         slugify, write_source_page, write_concept_page,
-        write_entity_page, update_index, append_log, write_raw_source,
+        write_entity_page, update_index, append_log,
+        write_raw_source,
     )
     from medulla.semantic.store import upsert_wiki_page
 
@@ -160,13 +161,11 @@ def store_wiki_page(
     page_path = page_dir / f"{slug}.md"
     page_path.write_text(content)
 
-    # Write raw/ URL reference for backtrace (when Claude used WebFetch)
+    # Append URL to the shared reference log (when Claude used WebFetch)
+    # One log file beats 20 near-empty individual raw/ files
     if source_url:
-        write_raw_source(
-            wiki_path, slug,
-            f"[Source fetched by LLM — see wiki page for synthesized content]\n\nURL: {source_url}",
-            url=source_url, title=title, source_type="url",
-        )
+        from medulla.semantic.wiki import append_url_reference
+        append_url_reference(wiki_path, slug, source_url, title=title)
 
     upsert_wiki_page(conn, slug, page_type, title, content, page_path,
                      tags=tags or [], scope=scope)
