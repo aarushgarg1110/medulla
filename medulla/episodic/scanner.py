@@ -22,7 +22,7 @@ def scan(conn: sqlite3.Connection, force: bool = False, source: str | None = Non
 
     Returns counts: {indexed, skipped, errors, agents_indexed, agents_skipped}
     """
-    indexed = skipped = errors = 0
+    indexed = skipped = errors = empty = 0
     agents_indexed = agents_skipped = 0
 
     session_files, agent_files = _discover_files(source)
@@ -32,9 +32,11 @@ def scan(conn: sqlite3.Connection, force: bool = False, source: str | None = Non
             result = _process_session(conn, path, force)
             if result == "indexed":
                 indexed += 1
-            elif result == "skipped":
+            elif result == "skipped_mtime":
                 skipped += 1
-        except Exception as e:
+            elif result == "skipped_empty":
+                empty += 1
+        except Exception:
             errors += 1
 
     for path in agent_files:
@@ -42,7 +44,7 @@ def scan(conn: sqlite3.Connection, force: bool = False, source: str | None = Non
             result = _process_agent(conn, path, force)
             if result == "indexed":
                 agents_indexed += 1
-            elif result == "skipped":
+            elif result == "skipped_mtime":
                 agents_skipped += 1
         except Exception:
             pass
@@ -50,6 +52,7 @@ def scan(conn: sqlite3.Connection, force: bool = False, source: str | None = Non
     return {
         "indexed": indexed,
         "skipped": skipped,
+        "empty": empty,
         "errors": errors,
         "agents_indexed": agents_indexed,
         "agents_skipped": agents_skipped,
@@ -84,11 +87,11 @@ def _process_session(conn: sqlite3.Connection, path: Path, force: bool) -> str:
                 path.stat().st_mtime, tz=timezone.utc
             ).isoformat()
             if file_mtime <= scanned_at:
-                return "skipped"
+                return "skipped_mtime"
 
     session = parse_session(path)
     if session is None:
-        return "skipped"
+        return "skipped_empty"  # empty/stub/no-user-messages
 
     upsert_session(conn, session)
     return "indexed"
@@ -103,7 +106,7 @@ def _process_agent(conn: sqlite3.Connection, path: Path, force: bool) -> str:
                 path.stat().st_mtime, tz=timezone.utc
             ).isoformat()
             if file_mtime <= scanned_at:
-                return "skipped"
+                return "skipped_mtime"
 
     agent = parse_agent_session(path)
     if agent is None:

@@ -29,8 +29,9 @@ def scan(
         conn = connect()
         counts = do_scan(conn, force=force, source=source)
 
-    console.print(f"[green]✓[/green] Sessions: {counts['indexed']} indexed, {counts['skipped']} skipped, {counts['errors']} errors")
-    console.print(f"[green]✓[/green] Agents:   {counts['agents_indexed']} indexed, {counts['agents_skipped']} skipped")
+    empty_note = f", {counts['empty']} empty/stub" if counts.get('empty') else ""
+    console.print(f"[green]✓[/green] Sessions: {counts['indexed']} indexed, {counts['skipped']} unchanged{empty_note}, {counts['errors']} errors")
+    console.print(f"[green]✓[/green] Agents:   {counts['agents_indexed']} indexed, {counts['agents_skipped']} unchanged")
 
 
 # ── search ─────────────────────────────────────────────────────────────────────
@@ -402,12 +403,13 @@ def wiki_lint():
 
     console.print(f"\n[bold]Wiki lint[/bold] — {report['total_pages']} pages")
 
-    if report["broken_links"]:
-        console.print(f"\n[red]Broken links ({len(report['broken_links'])}):[/red]")
-        for link in report["broken_links"][:20]:
-            console.print(f"  {link}", markup=False)  # [[wikilinks]] confuse Rich markup
+    suggested = report.get("suggested_pages", [])
+    if suggested:
+        console.print(f"\n[dim]Suggested pages ({len(suggested)} linked but not yet created — ingest more sources to fill them):[/dim]")
+        for link in suggested[:20]:
+            console.print(f"  {link}", markup=False)
     else:
-        console.print("[green]✓[/green] No broken links")
+        console.print("[green]✓[/green] No forward references")
 
     if report["orphaned_pages"]:
         console.print(f"\n[yellow]Orphaned pages ({len(report['orphaned_pages'])}):[/yellow]")

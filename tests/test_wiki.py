@@ -165,7 +165,7 @@ def test_lint_clean_wiki(tmp_path):
     )
     result = lint_wiki(wiki)
     assert result["total_pages"] == 2
-    assert result["broken_links"] == []
+    assert result["suggested_pages"] == []
     assert result["orphaned_pages"] == []
 
 
@@ -177,8 +177,8 @@ def test_lint_detects_broken_link(tmp_path):
         "---\ntitle: LogD\n---\n\nSee [[nonexistent-page]] for details.\n"
     )
     result = lint_wiki(wiki)
-    assert len(result["broken_links"]) >= 1
-    assert any("nonexistent-page" in link for link in result["broken_links"])
+    assert len(result["suggested_pages"]) >= 1
+    assert any("nonexistent-page" in link for link in result["suggested_pages"])
 
 
 def test_lint_detects_orphan(tmp_path):

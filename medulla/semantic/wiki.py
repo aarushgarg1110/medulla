@@ -406,11 +406,16 @@ def lint_wiki(wiki_path: Path) -> dict:
 
     orphans = [slug for slug, count in inbound.items() if count == 0]
 
+    # Source pages are expected leaf nodes — exclude from orphan reporting
+    orphans = [slug for slug, count in inbound.items()
+               if count == 0 and slug not in {f.stem for f in all_files
+                                              if f.parent.name == "sources"}]
+
     return {
         "total_pages": len(all_files),
-        "broken_links": broken_links,
+        "suggested_pages": broken_links,   # forward refs to pages not yet created
         "orphaned_pages": orphans,
-        "ok": len(broken_links) == 0 and len(orphans) == 0,
+        "ok": len(orphans) == 0,           # broken_links are normal; only orphans matter
     }
 
 
