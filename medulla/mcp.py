@@ -139,13 +139,31 @@ _TOOLS = [
     types.Tool(
         name="medulla_ingest",
         description=(
-            "Store a wiki page you have already synthesized. You (the LLM) are responsible for the synthesis. "
-            "Format content as markdown following the Medulla wiki schema:\n"
-            "---\\ntitle: ...\\ntags: [tag1, tag2]\\ndate_ingested: YYYY-MM-DD\\n---\\n"
+            "Store a wiki page you have synthesized. Call this tool MULTIPLE TIMES to build a fully connected graph — "
+            "one call per page type. Skipping concept/entity pages leaves orphaned nodes in Obsidian.\n\n"
+            "REQUIRED WORKFLOW for a complete graph:\n"
+            "1. page_type='source': the full source summary\n"
+            "2. page_type='concept': once per significant concept — NO LIMIT, create as many as are meaningful\n"
+            "3. page_type='entity': once per significant entity — NO LIMIT\n\n"
+            "CRITICAL: Concept and entity pages MUST include 'sources: [source-slug]' in their frontmatter. "
+            "This creates bidirectional edges in the Obsidian graph. Without it, nodes are isolated.\n\n"
+            "SOURCE PAGE format:\n"
+            "---\\ntitle: Full Title\\nsource: <url or path>\\ndate_ingested: YYYY-MM-DD\\n"
+            "tags: [tag1, tag2, ...]\\n---\\n"
             "## Summary\\n## Key Points\\n## Concepts Introduced or Updated\\n"
-            "## Entities Mentioned\\n## Connections\\n## Gaps / Open Questions\\n"
-            "Use [[slug]] wikilinks for cross-references. "
-            "If you fetched the source via WebFetch, pass source_url so a raw/ backtrace file is created."
+            "## Entities Mentioned\\n## Connections\\n## Gaps / Open Questions\n\n"
+            "CONCEPT PAGE format:\n"
+            "---\\ntitle: Concept Name\\ntags: [tag1, tag2]\\nsources: [source-slug]\\n---\\n"
+            "## Definition\\n## How It Works\\n## Why It Matters\\n## Nuances & Caveats\\n"
+            "## Evidence & Examples\\n## Connections\\n## Open Questions\n\n"
+            "ENTITY PAGE format:\n"
+            "---\\ntitle: Entity Name\\ntype: person|org|tool|project|database\\n"
+            "tags: [tag1]\\nsources: [source-slug]\\n---\\n"
+            "## Who / What\\n## Relevance\\n## Key Contributions / Features\\n## Connections\n\n"
+            "Use [[slug]] wikilinks for ALL cross-references (slugs = lowercase-hyphenated). "
+            "Be generous with tags — they power the Obsidian graph filter. "
+            "The 3-concept/2-entity cap applies ONLY to CLI ingest (Bedrock token limits). MCP has NO limit. "
+            "If you fetched via WebFetch, pass source_url to create a raw/ backtrace entry."
         ),
         inputSchema={
             "type": "object",

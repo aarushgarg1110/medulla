@@ -148,6 +148,22 @@ def test_append_log_multiple_entries(tmp_path):
 
 # ── lint ──────────────────────────────────────────────────────────────────────
 
+def test_lint_excludes_system_files(tmp_path):
+    """url-references.md, index.md, log.md are never orphaned or counted."""
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    raw = wiki / "raw"
+    raw.mkdir()
+    (raw / "url-references.md").write_text("# URL References\n## [2026] test\nURL: https://x.com")
+    (wiki / "index.md").write_text("# Index")
+    (wiki / "log.md").write_text("# Log")
+    (wiki / "concepts").mkdir()
+    (wiki / "concepts" / "real-concept.md").write_text("# Real\nContent.")
+    result = lint_wiki(wiki)
+    assert "url-references" not in result.get("orphaned_pages", [])
+    assert result["total_pages"] == 1  # only real-concept counts
+
+
 def test_lint_missing_wiki(tmp_path):
     result = lint_wiki(tmp_path / "nonexistent")
     assert "error" in result

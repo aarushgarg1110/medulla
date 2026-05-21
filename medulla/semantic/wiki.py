@@ -386,10 +386,12 @@ def lint_wiki(wiki_path: Path) -> dict:
     if not wiki_path.exists():
         return {"error": "Wiki directory does not exist. Run `medulla ingest` first."}
 
+    # System files excluded from lint — not real wiki pages
+    _SYSTEM_FILES = {"index.md", "log.md", "url-references.md"}
     all_slugs: set[str] = set()
     all_files: list[Path] = []
     for md in wiki_path.rglob("*.md"):
-        if md.name in ("index.md", "log.md"):
+        if md.name in _SYSTEM_FILES:
             continue
         all_files.append(md)
         all_slugs.add(md.stem)

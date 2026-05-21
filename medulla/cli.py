@@ -388,6 +388,19 @@ def wiki_list(
     console.print(table)
 
 
+@wiki_app.command(name="open")
+def wiki_open():
+    """Open the wiki vault in Obsidian."""
+    import subprocess
+    from medulla.config import get_config
+    wiki = get_config().wiki_path
+    if not wiki.exists():
+        console.print("[red]Wiki not found. Run medulla ingest first.[/red]")
+        raise typer.Exit(1)
+    subprocess.run(["open", "-a", "Obsidian", str(wiki)], check=False)
+    console.print(f"[green]✓[/green] Opening {wiki} in Obsidian")
+
+
 @wiki_app.command(name="lint")
 def wiki_lint():
     """Check for broken links and orphaned pages."""

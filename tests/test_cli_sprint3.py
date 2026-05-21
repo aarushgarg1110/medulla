@@ -189,6 +189,13 @@ def test_wiki_lint_no_wiki():
     assert "does not exist" in result.output or "ingest" in result.output
 
 
+def test_wiki_open_no_wiki(tmp_path, monkeypatch):
+    """wiki open fails gracefully when wiki doesn't exist."""
+    result = runner.invoke(app, ["wiki", "open"])
+    assert result.exit_code == 1
+    assert "not found" in result.output.lower() or "ingest" in result.output.lower()
+
+
 def test_wiki_lint_clean(tmp_path, monkeypatch):
     import medulla.config as cfg
     wiki = cfg.get_config().wiki_path
