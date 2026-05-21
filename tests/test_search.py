@@ -161,6 +161,32 @@ def test_search_wiki_layer_returns_wiki_results(db):
     assert any(r.result_type == "wiki_page" for r in results)
 
 
+def test_strip_frontmatter_removes_yaml():
+    from medulla.search import _strip_frontmatter
+    content = "---\ntitle: Test\ntags: [a]\n---\n\n## Summary\n\nActual content here."
+    result = _strip_frontmatter(content)
+    assert "title:" not in result
+    assert "Actual content" in result
+
+
+def test_strip_frontmatter_no_frontmatter():
+    from medulla.search import _strip_frontmatter
+    content = "# Just a heading\n\nContent."
+    assert _strip_frontmatter(content) == content
+
+
+def test_search_wiki_excerpt_strips_frontmatter(db):
+    """Wiki search results should show article content, not YAML frontmatter."""
+    from medulla.semantic.store import upsert_wiki_page
+    upsert_wiki_page(db, "test-wiki", "concept", "Test",
+                     "---\ntitle: Test\ntags: []\n---\n\n## Definition\n\nThis is the actual definition text.",
+                     __import__("pathlib").Path("/wiki/concepts/test.md"))
+    results = search(db, "definition text", layer="semantic")
+    assert len(results) > 0
+    assert "---" not in results[0].excerpt
+    assert "definition" in results[0].excerpt.lower()
+
+
 def test_search_wiki_fts_error_returns_empty(db):
     """_search_wiki handles OperationalError when FTS table missing."""
     db.execute("DROP TABLE IF EXISTS wiki_fts")

@@ -53,9 +53,13 @@ def search(
         raise typer.Exit()
 
     for r in results:
-        date_str = r.date[:10] if r.date else "unknown"
-        proj = r.project_dir.split("/")[-1] if r.project_dir else ""
-        console.print(f"\n[bold cyan]{r.id[:8]}[/bold cyan]  [dim]{date_str}  {proj}[/dim]")
+        if r.layer == "semantic":
+            label = f"[magenta]{r.title}[/magenta]"
+        else:
+            date_str = r.date[:10] if r.date else ""
+            proj = r.project_dir.split("/")[-1] if r.project_dir else ""
+            label = f"[bold cyan]{r.id[:8]}[/bold cyan]  [dim]{date_str}  {proj}[/dim]"
+        console.print(f"\n{label}")
         console.print(f"  [italic]{r.excerpt}[/italic]")
 
 
@@ -120,8 +124,9 @@ def stats():
 
     console.print(f"\n  [bold]Semantic (wiki)[/bold]")
     console.print(f"    Pages:         {ws['total']:,}")
+    _PLURAL = {"source": "sources", "concept": "concepts", "entity": "entities"}
     for page_type, count in ws.get("by_type", {}).items():
-        console.print(f"    {page_type + 's':<14} {count:,}")
+        console.print(f"    {_PLURAL.get(page_type, page_type + 's'):<14} {count:,}")
 
     if s['top_tools']:
         console.print(f"\n  [bold]Top tools:[/bold]")
@@ -400,7 +405,7 @@ def wiki_lint():
     if report["broken_links"]:
         console.print(f"\n[red]Broken links ({len(report['broken_links'])}):[/red]")
         for link in report["broken_links"][:20]:
-            console.print(f"  {link}")
+            console.print(f"  {link}", markup=False)  # [[wikilinks]] confuse Rich markup
     else:
         console.print("[green]✓[/green] No broken links")
 

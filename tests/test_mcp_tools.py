@@ -2,7 +2,7 @@
 import pytest
 
 from medulla.episodic.store import upsert_session, upsert_agent_session
-from medulla.mcp import (
+from medulla.mcp import (  # noqa: E402
     _tool_search,
     _tool_session_detail,
     _tool_session_tree,
@@ -14,6 +14,17 @@ from medulla.mcp import (
     _dispatch,
 )
 from tests.test_store import make_session, make_agent
+
+
+@pytest.fixture(autouse=True)
+def isolated_config(tmp_path, monkeypatch):
+    """Ensure MCP tool tests never write to real ~/.medulla wiki dir."""
+    import medulla.config as cfg
+    cfg._config = None
+    test_cfg = cfg.Config(medulla_dir=tmp_path / ".medulla")
+    monkeypatch.setattr(cfg, "_config", test_cfg)
+    yield
+    cfg._config = None
 
 
 def _setup(db):

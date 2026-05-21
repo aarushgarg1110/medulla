@@ -13,6 +13,7 @@ dependencies = [
     "pymupdf>=1.27.2.3",
     "rich>=15.0.0",
     "tomli-w>=1.2.0",
+    "trafilatura>=2.0.0",
     "typer>=0.25.1",
 ]
 

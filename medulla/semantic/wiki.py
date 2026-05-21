@@ -352,7 +352,8 @@ def update_index(wiki_path: Path, slug: str, page_type: str, title: str, summary
     if entry_anchor in content:
         return  # already indexed, skip
     entry = f"| {entry_anchor} | {summary_line[:80]} |\n"
-    section = f"## {page_type.capitalize()}s"
+    _PLURAL = {"source": "Sources", "concept": "Concepts", "entity": "Entities"}
+    section = f"## {_PLURAL.get(page_type, page_type.capitalize() + 's')}"
     if section not in content:
         content += f"\n{section}\n\n| Page | Summary |\n|---|---|\n"
     content = content.replace(

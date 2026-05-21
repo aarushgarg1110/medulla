@@ -137,12 +137,21 @@ def _search_wiki(conn: sqlite3.Connection, fts_query: str, limit: int) -> list[S
             result_type="wiki_page",
             id=row["slug"],
             title=f"[{row['type']}] {row['title']}",
-            excerpt=_snippet(row["content"], 200),
+            excerpt=_snippet(_strip_frontmatter(row["content"]), 200),
             project_dir=None,
             date=None,
             rank=row["rank"],
         ))
     return results
+
+
+def _strip_frontmatter(content: str) -> str:
+    """Remove YAML frontmatter (--- ... ---) before excerpting."""
+    if content.startswith("---"):
+        end = content.find("\n---", 3)
+        if end != -1:
+            return content[end + 4:].lstrip()
+    return content
 
 
 def _to_fts_query(query: str) -> str:

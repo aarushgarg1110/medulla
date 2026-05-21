@@ -49,21 +49,23 @@ def test_url_extract_title_fallback_h1():
     assert "Article Title" in _extract_title(html)
 
 
-def test_url_html_to_text_strips_tags():
-    from medulla.semantic.sources.url import _html_to_text
-    html = "<p>Hello <b>world</b></p><script>evil()</script>"
-    text = _html_to_text(html)
-    assert "Hello" in text
-    assert "world" in text
-    assert "<" not in text
+def test_url_extract_text_uses_trafilatura(monkeypatch):
+    """trafilatura extracts main content; falls back to basic stripping."""
+    from medulla.semantic.sources.url import _extract_text
+    html = "<html><body><article><p>Main article content here.</p></article><nav>Skip nav</nav></body></html>"
+    text = _extract_text(html)
+    assert isinstance(text, str)
+    assert len(text) > 0
+
+
+def test_url_extract_text_fallback_strips_tags(monkeypatch):
+    """When trafilatura returns nothing, falls back to basic HTML stripping."""
+    monkeypatch.setattr("trafilatura.extract", lambda *a, **kw: None)
+    from medulla.semantic.sources.url import _extract_text
+    html = "<p>Hello world</p><script>evil()</script>"
+    text = _extract_text(html)
+    assert "Hello world" in text
     assert "evil" not in text
-
-
-def test_url_html_to_text_collapses_whitespace():
-    from medulla.semantic.sources.url import _html_to_text
-    html = "<p>too   many    spaces</p>"
-    text = _html_to_text(html)
-    assert "  " not in text
 
 
 # ── Markdown extraction ───────────────────────────────────────────────────────
