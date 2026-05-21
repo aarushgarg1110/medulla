@@ -163,7 +163,9 @@ _TOOLS = [
             "Use [[slug]] wikilinks for ALL cross-references (slugs = lowercase-hyphenated). "
             "Be generous with tags — they power the Obsidian graph filter. "
             "The 3-concept/2-entity cap applies ONLY to CLI ingest (Bedrock token limits). MCP has NO limit. "
-            "If you fetched via WebFetch, pass source_url to create a raw/ backtrace entry."
+            "ALWAYS pass source_path when you read a local file (PDF, markdown) — the file gets copied to wiki/raw/ as an immutable archive. "
+            "ALWAYS pass source_url when you fetched via WebFetch — the URL gets logged to url-references.md. "
+            "Both can be provided for a PDF downloaded from a URL."
         ),
         inputSchema={
             "type": "object",
@@ -172,7 +174,8 @@ _TOOLS = [
                 "content": {"type": "string", "description": "Full markdown content you have synthesized"},
                 "page_type": {"type": "string", "enum": ["source", "concept", "entity"], "default": "source"},
                 "tags": {"type": "array", "items": {"type": "string"}},
-                "source_url": {"type": "string", "description": "Original URL if you fetched via WebFetch (creates raw/ backtrace)"},
+                "source_url": {"type": "string", "description": "Original URL if you fetched via WebFetch (appended to url-references.md log)"},
+                "source_path": {"type": "string", "description": "Local file path if you read a PDF/file (e.g. /Users/agarg/Downloads/paper.pdf) — file is copied to wiki/raw/ for immutable archive"},
             },
             "required": ["title", "content"],
         },
@@ -497,8 +500,15 @@ def _tool_ingest(conn, args: dict) -> str:
             page_type=args.get("page_type", "source"),
             tags=args.get("tags", []),
             source_url=args.get("source_url"),
+            source_path=args.get("source_path"),
         )
-        return f"Stored: {result['slug']} ({result['type']}) at {result['path']}"
+        extras = []
+        if args.get("source_path"):
+            extras.append("PDF copied to raw/")
+        if args.get("source_url"):
+            extras.append("URL logged to url-references.md")
+        note = f" ({', '.join(extras)})" if extras else ""
+        return f"Stored: {result['slug']} ({result['type']}){note}"
     except Exception as e:
         return f"Store failed: {e}"
 

@@ -329,6 +329,26 @@ def test_tool_ingest_mcp_stores_directly(db, tmp_path, monkeypatch):
     assert "Stored" in result or "test-finding" in result
 
 
+def test_tool_ingest_with_source_path_copies_to_raw(db, tmp_path, monkeypatch):
+    """source_path copies local file to wiki/raw/."""
+    import medulla.config as cfg
+    cfg.get_config().medulla_dir.mkdir(parents=True, exist_ok=True)
+    # Create a fake PDF file
+    fake_pdf = tmp_path / "paper.pdf"
+    fake_pdf.write_bytes(b"fake pdf content")
+    content = "---\ntitle: Paper\n---\n\n## Summary\n\nContent."
+    from medulla.mcp import _HANDLERS
+    result = _HANDLERS["medulla_ingest"](db, {
+        "title": "Paper", "content": content,
+        "source_path": str(fake_pdf)
+    })
+    assert "Stored" in result
+    assert "raw/" in result or "PDF copied" in result
+    # Verify file was copied
+    wiki_raw = cfg.get_config().wiki_path / "raw" / "paper.pdf"
+    assert wiki_raw.exists()
+
+
 def test_tool_ingest_mcp_with_source_url(db, tmp_path, monkeypatch):
     """medulla_ingest with source_url creates raw/ backtrace file."""
     import medulla.config as cfg

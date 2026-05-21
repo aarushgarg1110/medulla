@@ -256,14 +256,20 @@ def store_wiki_page(
     page_type: str = "source",
     tags: list[str] | None = None,
     source_url: str | None = None,
+    source_path: str | None = None,
     scope: str = "personal",
 ) -> dict:
     """Store Claude-synthesized content directly — no LLM call.
 
     Claude IS the LLM when using MCP. This is pure storage.
-    If source_url: appends to url-references.md for backtrace.
+    - source_url: WebFetch URL → appended to url-references.md log
+    - source_path: local file path → file copied to wiki/raw/ for backtrace
+    Both can be provided (e.g. PDF downloaded from a URL).
     """
-    from medulla.semantic.wiki import slugify, append_url_reference, update_index, append_log
+    import shutil
+    from medulla.semantic.wiki import (
+        slugify, append_url_reference, update_index, append_log, write_raw_source,
+    )
     from medulla.semantic.store import upsert_wiki_page
 
     slug = slugify(title)
@@ -274,6 +280,17 @@ def store_wiki_page(
     page_path = page_dir / f"{slug}.md"
     page_path.write_text(content)
 
+    # Local file → copy to raw/ for immutable archive + backtrace
+    if source_path:
+        src = Path(source_path)
+        if src.exists():
+            raw_dir = wiki_path / "raw"
+            raw_dir.mkdir(exist_ok=True)
+            raw_dest = raw_dir / src.name
+            if not raw_dest.exists():
+                shutil.copy2(src, raw_dest)
+
+    # WebFetch URL → append to shared url-references.md log
     if source_url:
         append_url_reference(wiki_path, slug, source_url, title=title)
 
