@@ -411,8 +411,9 @@ def _tool_stats(conn) -> str:
         lines.append(f"  Date range:     {s['oldest'][:10]} → {s['newest'][:10]}")
     lines.append(f"\nSemantic (wiki):")
     lines.append(f"  Pages:          {ws['total']:,}")
+    _PLURAL = {"source": "sources", "concept": "concepts", "entity": "entities"}
     for pt, count in ws.get("by_type", {}).items():
-        lines.append(f"  {pt + 's':<15} {count:,}")
+        lines.append(f"  {_PLURAL.get(pt, pt + 's'):<15} {count:,}")
     if s["top_tools"]:
         lines.append("\nTop tools:")
         for name, count in s["top_tools"]:
