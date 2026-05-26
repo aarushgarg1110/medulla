@@ -42,15 +42,19 @@ def intake_to_raw(
 
     if source.startswith("http://") or source.startswith("https://"):
         from medulla.semantic.sources.url import extract
+        from medulla.semantic.wiki import append_url_reference
         fetch_title, text = extract(source)
         final_title = title or fetch_title
         slug = slugify(final_title)
-        raw_path = write_raw_source(
-            wiki_path, slug, text,
-            url=source, title=final_title, source_type="url",
-        )
-        queue_pending(conn, str(raw_path), "url", final_title)
-        return raw_path
+        # URLs: log to url-references.md only — no markdown file in raw/
+        # raw/ is reserved for actual binary files (.pdf, .docx, etc.)
+        append_url_reference(wiki_path, slug, source, title=final_title)
+        # Store extracted text in a temporary path for processing only
+        import tempfile
+        tmp = Path(tempfile.mktemp(suffix=".md", prefix=f"{slug}_"))
+        tmp.write_text(f"---\nurl: {source}\ntitle: {final_title}\nsource_type: url\n---\n\n{text}")
+        queue_pending(conn, str(tmp), "url", final_title)
+        return tmp
 
     src = Path(source)
     if not src.exists():
@@ -168,6 +172,32 @@ def _extract_frontmatter_url(content: str) -> str | None:
 
 # ── Core LLM pipeline ─────────────────────────────────────────────────────────
 
+def _build_wiki_schema(wiki_path: Path) -> str:
+    """Build a compact schema of all existing wiki pages for LLM injection.
+
+    This is the key to accurate wikilinks — the LLM can only link to slugs
+    that exist (or that it's about to create). Without this, it invents slugs
+    that don't match existing pages and the graph fragments.
+    """
+    import re
+    _DIRS = {"concepts": "concept", "entities": "entity", "sources": "source"}
+    lines = []
+    for dir_name, page_type in _DIRS.items():
+        d = wiki_path / dir_name
+        if not d.exists():
+            continue
+        for md in sorted(d.glob("*.md")):
+            slug = md.stem
+            content = md.read_text(errors="replace")
+            # Extract title from frontmatter
+            m = re.search(r"^title:\s*(.+)$", content, re.MULTILINE)
+            title_str = m.group(1).strip() if m else slug
+            lines.append(f"[[{dir_name}/{slug}]] ({page_type}) — {title_str}")
+    if not lines:
+        return "No existing pages yet. This is the first ingest — create concepts and entities freely."
+    return "\n".join(lines)
+
+
 def _run_llm_pipeline(
     conn: sqlite3.Connection,
     text: str,
@@ -188,11 +218,13 @@ def _run_llm_pipeline(
     from datetime import date
 
     source_type = "url" if source_ref.startswith("http") else "file"
+    schema = _build_wiki_schema(wiki_path)
     prompt = INGEST_PROMPT_TEMPLATE.format(
         title=title,
         source_type=source_type,
         today=date.today().isoformat(),
         text=text[:40_000],
+        wiki_schema=schema,
     )
     response = provider.generate(prompt, system=INGEST_SYSTEM_PROMPT, on_token=on_token)
     data = _parse_llm_response(response)
@@ -275,7 +307,8 @@ def store_wiki_page(
     slug = slugify(title)
     wiki_path.mkdir(parents=True, exist_ok=True)
 
-    page_dir = wiki_path / f"{page_type}s"
+    _DIR = {"source": "sources", "concept": "concepts", "entity": "entities"}
+    page_dir = wiki_path / _DIR.get(page_type, f"{page_type}s")
     page_dir.mkdir(exist_ok=True)
     page_path = page_dir / f"{slug}.md"
     page_path.write_text(content)
@@ -312,7 +345,10 @@ def ingest_url_mcp(
     title: str | None = None,
     scope: str = "personal",
 ) -> dict:
-    """Fetch URL + write raw/ + process. For MCP clients without WebFetch."""
+    """Fetch URL + log to url-references.md + process. For MCP clients without WebFetch.
+
+    URLs are logged in url-references.md only — raw/ reserved for binary files.
+    """
     raw_path = intake_to_raw(conn, wiki_path, url, title)
     results = process_pending(wiki_path, conn, provider, scope)
     return results[0] if results else {"source": "", "total_pages": 0}

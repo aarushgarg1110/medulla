@@ -397,6 +397,31 @@ def _make_cfg(tmp_path):
     return c
 
 
+def test_tool_wiki_schema_empty(db, tmp_path, monkeypatch):
+    c = _make_cfg(tmp_path)
+    c.wiki_path.mkdir(parents=True)
+    import medulla.config as cfg_mod
+    monkeypatch.setattr(cfg_mod, "get_config", lambda: c)
+    from medulla.mcp import _tool_wiki_schema
+    result = _tool_wiki_schema(db, {})
+    assert "No existing pages" in result or "first ingest" in result
+
+
+def test_tool_wiki_schema_with_pages(db, tmp_path, monkeypatch):
+    c = _make_cfg(tmp_path)
+    c.wiki_path.mkdir(parents=True)
+    (c.wiki_path / "concepts").mkdir()
+    (c.wiki_path / "concepts" / "multi-head-attention.md").write_text(
+        "---\ntitle: Multi-Head Attention\n---\nContent."
+    )
+    import medulla.config as cfg_mod
+    monkeypatch.setattr(cfg_mod, "get_config", lambda: c)
+    from medulla.mcp import _tool_wiki_schema
+    result = _tool_wiki_schema(db, {})
+    assert "multi-head-attention" in result
+    assert "concepts/" in result
+
+
 def test_tool_list_raw_empty(db, tmp_path, monkeypatch):
     c = _make_cfg(tmp_path)
     import medulla.config as cfg_mod

@@ -13,6 +13,13 @@ def test_slugify_basic():
     assert slugify("LogD Prediction") == "logd-prediction"
 
 
+def test_slugify_version_number():
+    """Version numbers like 2.0 should become 2-0 not 20."""
+    assert slugify("Software 2.0") == "software-2-0"
+    assert slugify("GPT-2") == "gpt-2"
+    assert slugify("Adam v1.5") == "adam-v1-5"
+
+
 def test_slugify_special_chars():
     assert slugify("pKa: Acid/Base") == "pka-acidbase"
 

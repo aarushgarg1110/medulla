@@ -142,6 +142,7 @@ _TOOLS = [
             "Store a wiki page you have synthesized. Call this tool MULTIPLE TIMES to build a fully connected graph — "
             "one call per page type. Skipping concept/entity pages leaves orphaned nodes in Obsidian.\n\n"
             "REQUIRED WORKFLOW for a complete graph:\n"
+            "0. Call medulla_wiki_schema FIRST to get existing page slugs — use ONLY those slugs for [[wikilinks]]\n"
             "1. page_type='source': the full source summary\n"
             "2. page_type='concept': once per significant concept — NO LIMIT, create as many as are meaningful\n"
             "3. page_type='entity': once per significant entity — NO LIMIT\n\n"
@@ -198,6 +199,17 @@ _TOOLS = [
         },
     ),
     types.Tool(
+        name="medulla_wiki_schema",
+        description=(
+            "Get all existing wiki page slugs and titles. "
+            "CALL THIS FIRST before calling medulla_ingest for any source. "
+            "Use the returned slugs to write accurate [[wikilinks]] — only link to slugs that exist "
+            "or that you are about to create in this ingest session. "
+            "Linking to non-existent slugs fragments the Obsidian graph."
+        ),
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    types.Tool(
         name="medulla_list_raw",
         description=(
             "List files in wiki/raw/ that haven't been processed yet. "
@@ -242,6 +254,7 @@ _HANDLERS: dict[str, Any] = {
     "medulla_list": lambda conn, args: _tool_list(conn, args),
     "medulla_stats": lambda conn, args: _tool_stats(conn),
     "medulla_events_search": lambda conn, args: _tool_events_search(conn, args),
+    "medulla_wiki_schema": lambda conn, args: _tool_wiki_schema(conn, args),
     "medulla_wiki_search": lambda conn, args: _tool_wiki_search(conn, args),
     "medulla_wiki_page": lambda conn, args: _tool_wiki_page(conn, args),
     "medulla_ingest": lambda conn, args: _tool_ingest(conn, args),
@@ -455,6 +468,14 @@ def _tool_events_search(conn, args: dict) -> str:
         if r["output_preview"]:
             lines.append(f"    → {r['output_preview'][:60]}")
     return "\n".join(lines)
+
+
+def _tool_wiki_schema(conn, args: dict) -> str:
+    from medulla.config import get_config
+    from medulla.semantic.ingest import _build_wiki_schema
+    wiki_path = get_config().wiki_path
+    schema = _build_wiki_schema(wiki_path)
+    return f"Current wiki pages (use these exact slugs for [[wikilinks]]):\n\n{schema}"
 
 
 def _tool_wiki_search(conn, args: dict) -> str:

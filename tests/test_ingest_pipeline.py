@@ -218,6 +218,32 @@ def test_full_flow_obsidian_clip_pattern(db, tmp_path, mock_provider):
     assert results[0]["total_pages"] >= 1
 
 
+def test_build_wiki_schema_empty(tmp_path):
+    from medulla.semantic.ingest import _build_wiki_schema
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    result = _build_wiki_schema(wiki)
+    assert "No existing pages" in result or "first ingest" in result
+
+
+def test_build_wiki_schema_with_pages(tmp_path):
+    from medulla.semantic.ingest import _build_wiki_schema
+    wiki = tmp_path / "wiki"
+    (wiki / "concepts").mkdir(parents=True)
+    (wiki / "concepts" / "adam-optimizer.md").write_text(
+        "---\ntitle: Adam Optimizer\n---\nContent."
+    )
+    (wiki / "entities").mkdir()
+    (wiki / "entities" / "andrej-karpathy.md").write_text(
+        "---\ntitle: Andrej Karpathy\n---\nContent."
+    )
+    result = _build_wiki_schema(wiki)
+    assert "adam-optimizer" in result
+    assert "andrej-karpathy" in result
+    assert "concepts/" in result
+    assert "entities/" in result
+
+
 def test_full_flow_multiple_sources(db, tmp_path, mock_provider):
     """Multiple files in raw/ all get processed."""
     wiki = tmp_path / "wiki"

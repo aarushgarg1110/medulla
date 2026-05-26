@@ -131,14 +131,19 @@ Source title: {title}
 Source type: {source_type}
 Date: {today}
 
+EXISTING WIKI PAGES (only wikilink to these exact slugs or new slugs you create below):
+{wiki_schema}
+
 Source text:
 ---
 {text}
 ---
 
-Produce a JSON object with this exact structure.
-IMPORTANT: Include at most 3 concept_pages and at most 2 entity_pages.
-Keep each field concise (1-3 sentences max per field). This keeps the response within token limits.
+Produce a JSON object synthesizing this source into the wiki.
+WIKILINK RULES: Use [[concepts/slug]], [[entities/slug]], [[sources/slug]] format.
+Only link to slugs in the EXISTING WIKI PAGES list above, or to new pages you create in this response.
+Never invent slugs that don't exist — this fragments the graph.
+Create as many concept_pages and entity_pages as are genuinely meaningful. No artificial limits.
 
 {{
   "source_page": {{
@@ -257,6 +262,9 @@ def append_url_reference(
 
 def slugify(title: str) -> str:
     s = title.lower()
+    # Preserve version numbers: "2.0" → "2-0", "GPT-2" → "gpt-2"
+    s = re.sub(r"(\d)\.(\d)", r"\1-\2", s)
+    # Remove non-alphanumeric except spaces and hyphens
     s = re.sub(r"[^\w\s-]", "", s)
     s = re.sub(r"[\s_]+", "-", s)
     s = re.sub(r"-+", "-", s)
