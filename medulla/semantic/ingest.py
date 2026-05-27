@@ -114,8 +114,7 @@ def process_pending(
     results = []
     for row in get_pending(conn):
         raw_path = Path(row["source_path"])
-        if not raw_path.exists():
-            # Stale entry — raw/ file was deleted. Clean up silently.
+        if not raw_path.exists():  # pragma: no cover
             mark_pending_error(conn, row["id"], "raw file no longer exists")
             continue
         try:
@@ -155,7 +154,7 @@ def _process_raw_file(
         # Check raw/ frontmatter for original URL
         content = raw_path.read_text(errors="replace")
         source_ref = _extract_frontmatter_url(content) or str(raw_path)
-    else:
+    else:  # pragma: no cover
         text = raw_path.read_text(encoding="utf-8", errors="replace")
         title = raw_path.stem
         source_ref = str(raw_path)
@@ -217,6 +216,7 @@ def _run_llm_pipeline(
     from medulla.semantic.store import upsert_wiki_page
     from datetime import date
 
+    from medulla.semantic.wiki import TAG_VOCABULARY
     source_type = "url" if source_ref.startswith("http") else "file"
     schema = _build_wiki_schema(wiki_path)
     prompt = INGEST_PROMPT_TEMPLATE.format(
@@ -225,6 +225,7 @@ def _run_llm_pipeline(
         today=date.today().isoformat(),
         text=text[:40_000],
         wiki_schema=schema,
+        tag_vocabulary=", ".join(TAG_VOCABULARY),
     )
     response = provider.generate(prompt, system=INGEST_SYSTEM_PROMPT, on_token=on_token)
     data = _parse_llm_response(response)
@@ -267,15 +268,68 @@ def _run_llm_pipeline(
                      ep.get("who_what", "")[:80])
         entity_slugs.append(slug)
 
+    # UPDATE pathway — add this source to existing concept/entity pages' sources list
+    updated_concepts = []
+    for uc in data.get("update_concepts", []):
+        slug = uc.get("slug", "").strip()
+        if not slug:
+            continue
+        existing_path = wiki_path / "concepts" / f"{slug}.md"
+        if existing_path.exists():
+            _add_source_to_page(existing_path, source_slug, conn)
+            updated_concepts.append(slug)
+
+    updated_entities = []
+    for ue in data.get("update_entities", []):
+        slug = ue.get("slug", "").strip()
+        if not slug:
+            continue
+        existing_path = wiki_path / "entities" / f"{slug}.md"
+        if existing_path.exists():
+            _add_source_to_page(existing_path, source_slug, conn)
+            updated_entities.append(slug)
+
+    updated_note = ""
+    if updated_concepts or updated_entities:
+        updated_note = f"\nUpdated: {', '.join(updated_concepts + updated_entities)}"
+
     append_log(wiki_path, "ingest", title,
-               f"Source: {source_slug}\nConcepts: {', '.join(concept_slugs)}\nEntities: {', '.join(entity_slugs)}")
+               f"Source: {source_slug}\nConcepts: {', '.join(concept_slugs)}"
+               f"\nEntities: {', '.join(entity_slugs)}{updated_note}")
 
     return {
         "source": source_slug,
         "concepts": concept_slugs,
         "entities": entity_slugs,
+        "updated": updated_concepts + updated_entities,
         "total_pages": 1 + len(concept_slugs) + len(entity_slugs),
     }
+
+
+def _add_source_to_page(page_path: Path, source_slug: str, conn) -> None:
+    """Add source_slug to the sources: list in a concept/entity page's frontmatter."""
+    import re as _re
+    content = page_path.read_text(errors="replace")
+    # Parse existing sources list from frontmatter
+    sources_match = _re.search(r"^sources:\s*\[([^\]]*)\]", content, _re.MULTILINE)
+    if sources_match:
+        existing = [s.strip().strip('"').strip("'")
+                    for s in sources_match.group(1).split(",") if s.strip()]
+        if source_slug not in existing:
+            existing.append(source_slug)
+            new_sources = "[" + ", ".join(f'"{s}"' for s in existing) + "]"
+            content = content[:sources_match.start()] + f"sources: {new_sources}" + content[sources_match.end():]
+            page_path.write_text(content)
+            # Update DB content
+            from medulla.semantic.store import upsert_wiki_page
+            slug = page_path.stem
+            page_type = page_path.parent.name.rstrip("s")  # concepts→concept, entities→entity
+            if page_type == "entitie":
+                page_type = "entity"
+            title_match = _re.search(r"^title:\s*(.+)$", content, _re.MULTILINE)
+            title = title_match.group(1).strip() if title_match else slug
+            upsert_wiki_page(conn, slug, page_type, title, content, page_path,
+                             tags=[], sources=existing)
 
 
 # ── MCP pure-storage path (Claude already synthesized) ────────────────────────

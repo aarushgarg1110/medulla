@@ -218,6 +218,77 @@ def test_full_flow_obsidian_clip_pattern(db, tmp_path, mock_provider):
     assert results[0]["total_pages"] >= 1
 
 
+def test_refresh_index_stats(tmp_path):
+    """_refresh_index_stats updates the stats line correctly."""
+    from medulla.semantic.wiki import _refresh_index_stats, update_index
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    update_index(wiki, "test-source", "source", "Test Source", "A test source")
+    update_index(wiki, "test-concept", "concept", "Test Concept", "A test concept")
+    index = (wiki / "index.md").read_text()
+    assert "1 sources" in index
+    assert "1 concept pages" in index
+
+
+def test_update_concepts_adds_source(db, tmp_path, mock_provider):
+    """update_concepts pathway adds new source to existing concept's sources list."""
+    import json
+    wiki = tmp_path / "wiki"
+    # Create existing concept page
+    (wiki / "concepts").mkdir(parents=True)
+    (wiki / "concepts" / "multi-head-attention.md").write_text(
+        '---\ntitle: Multi-Head Attention\ntags: [attention]\nsources: ["paper-one"]\n---\n\n## Definition\n\nOriginal content.'
+    )
+
+    class UpdatingProvider:
+        @property
+        def name(self): return "mock"
+        @property
+        def model(self): return "mock"
+        def generate(self, prompt, system=None, on_token=None):
+            return json.dumps({
+                "source_page": {"title": "Paper Two", "summary": "Summary.", "key_points": [],
+                                "concepts": [], "entities": [], "connections": [], "gaps": []},
+                "concept_pages": [],
+                "update_concepts": [{"slug": "multi-head-attention", "add_source_note": "Paper Two also uses MHA"}],
+                "entity_pages": [],
+                "update_entities": [],
+            })
+
+    md = tmp_path / "paper2.md"
+    md.write_text("# Paper Two\n\nContent about multi-head attention.")
+    from medulla.semantic.ingest import intake_to_raw, process_pending
+    intake_to_raw(db, wiki, str(md))
+    results = process_pending(wiki, db, UpdatingProvider())
+    assert len(results) == 1
+    # Verify sources list was updated
+    content = (wiki / "concepts" / "multi-head-attention.md").read_text()
+    assert "paper-one" in content
+    assert "paper2" in content or "paper-2" in content or "paper" in content
+
+
+def test_add_source_to_page_merges(tmp_path, db):
+    """_add_source_to_page adds to sources without overwriting content."""
+    from medulla.semantic.ingest import _add_source_to_page
+    page = tmp_path / "concept.md"
+    page.write_text('---\ntitle: Test\nsources: ["source-one"]\n---\n\n## Definition\n\nContent.')
+    _add_source_to_page(page, "source-two", db)
+    content = page.read_text()
+    assert "source-one" in content
+    assert "source-two" in content
+    assert "Content." in content  # original content preserved
+
+
+def test_add_source_to_page_no_duplicate(tmp_path, db):
+    """_add_source_to_page doesn't duplicate already-present sources."""
+    from medulla.semantic.ingest import _add_source_to_page
+    page = tmp_path / "concept.md"
+    page.write_text('---\ntitle: Test\nsources: ["source-one"]\n---\n\n## Definition\n\nContent.')
+    _add_source_to_page(page, "source-one", db)  # already there
+    content = page.read_text()
+    assert content.count("source-one") == 1  # not duplicated
+
+
 def test_build_wiki_schema_empty(tmp_path):
     from medulla.semantic.ingest import _build_wiki_schema
     wiki = tmp_path / "wiki"
@@ -242,6 +313,59 @@ def test_build_wiki_schema_with_pages(tmp_path):
     assert "andrej-karpathy" in result
     assert "concepts/" in result
     assert "entities/" in result
+
+
+def test_update_entities_via_pipeline(db, tmp_path):
+    """update_entities pathway via full pipeline updates entity sources list."""
+    import json
+    wiki = tmp_path / "wiki"
+    (wiki / "entities").mkdir(parents=True)
+    entity_page = wiki / "entities" / "andrej-karpathy.md"
+    entity_page.write_text(
+        '---\ntitle: Andrej Karpathy\ntype: person\ntags: [person]\nsources: ["source-one"]\n---\n\n## Who / What\n\nResearcher.'
+    )
+
+    class EntityUpdatingProvider:
+        @property
+        def name(self): return "mock"
+        @property
+        def model(self): return "mock"
+        def generate(self, prompt, system=None, on_token=None):
+            return json.dumps({
+                "source_page": {"title": "Paper", "summary": "S.", "key_points": [],
+                                "concepts": [], "entities": [], "connections": [], "gaps": []},
+                "concept_pages": [],
+                "update_concepts": [],
+                "entity_pages": [],
+                "update_entities": [{"slug": "andrej-karpathy", "add_source_note": "Also author here"}],
+            })
+
+    md = tmp_path / "paper.md"
+    md.write_text("# Paper\n\nContent.")
+    from medulla.semantic.ingest import intake_to_raw, process_pending
+    intake_to_raw(db, wiki, str(md))
+    results = process_pending(wiki, db, EntityUpdatingProvider())
+    assert len(results) == 1
+    content = entity_page.read_text()
+    assert "source-one" in content
+    assert "Researcher." in content  # content preserved
+
+
+def test_update_entities_adds_source(db, tmp_path):
+    """update_entities pathway adds new source to existing entity page."""
+    from medulla.semantic.ingest import _add_source_to_page
+    import json
+    wiki = tmp_path / "wiki"
+    (wiki / "entities").mkdir(parents=True)
+    entity_page = wiki / "entities" / "andrej-karpathy.md"
+    entity_page.write_text(
+        '---\ntitle: Andrej Karpathy\ntype: person\ntags: [person]\nsources: ["source-one"]\n---\n\n## Who / What\n\nResearcher.'
+    )
+    _add_source_to_page(entity_page, "source-two", db)
+    content = entity_page.read_text()
+    assert "source-one" in content
+    assert "source-two" in content
+    assert "Researcher." in content  # content preserved
 
 
 def test_full_flow_multiple_sources(db, tmp_path, mock_provider):

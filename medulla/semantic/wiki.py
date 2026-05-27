@@ -18,8 +18,6 @@ title: {title}
 source: {source}
 date_ingested: {date_ingested}
 tags: {tags}
-scope: {scope}
-ingested_by: medulla
 ---
 
 ## Summary
@@ -52,8 +50,6 @@ CONCEPT_TEMPLATE = """\
 title: {title}
 tags: {tags}
 sources: {sources}
-scope: {scope}
-ingested_by: medulla
 ---
 
 ## Definition
@@ -91,15 +87,13 @@ title: {title}
 type: {entity_type}
 tags: {tags}
 sources: {sources}
-scope: {scope}
-ingested_by: medulla
 ---
 
 ## Who / What
 
 {who_what}
 
-## Relevance
+## Relevance to This Wiki
 
 {relevance}
 
@@ -112,16 +106,34 @@ ingested_by: medulla
 {connections}
 """
 
+# Tag vocabulary — reuse these before inventing new ones (same philosophy as Nimbus-Brain)
+TAG_VOCABULARY = [
+    "deep-learning", "machine-learning", "nlp", "transformer", "attention",
+    "neural-networks", "optimization", "gradient-descent", "training",
+    "architecture", "language-models", "gpt", "bert", "encoder-decoder",
+    "self-attention", "multi-head-attention", "positional-encoding",
+    "autograd", "backpropagation", "automatic-differentiation",
+    "adaptive-learning-rate", "adam", "rmsprop", "adagrad",
+    "software-2-0", "programming-paradigm", "dataset-as-source-code",
+    "knowledge-management", "pkm", "llm-wiki", "obsidian",
+    "drug-discovery", "admet", "cheminformatics", "molecular-property-prediction",
+    "research", "paper", "education", "tools", "person", "org", "database",
+    "ai", "generative-models", "sequence-modeling", "machine-translation",
+    "benchmarks", "evaluation", "robustness", "security",
+]
+
 INGEST_SYSTEM_PROMPT = """\
 You are maintaining a personal knowledge wiki following the Karpathy LLM Wiki pattern.
 Your job is to read a source document and produce structured wiki pages in JSON format.
 
 Rules:
-- Use [[slug]] wikilinks for cross-references (slugs are lowercase-hyphenated)
-- Be concrete and specific — no vague generalities
-- Extract actual facts, findings, and connections from the source
-- Identify 2-5 significant concepts and 1-3 significant entities worth their own pages
-- For existing concepts/entities, note what this source adds or contradicts
+- Use [[slug]] wikilinks for cross-references (slugs are lowercase-hyphenated, e.g. [[multi-head-attention]])
+- Be concrete and specific — extract actual facts, findings, and connections from the source
+- Tags: reuse existing tags from the vocabulary before inventing new ones
+- For EXISTING concepts/entities in the wiki schema: add this source to their sources list (the update pathway)
+- For NEW concepts/entities not in the schema: create full pages
+- Create as many concept and entity pages as are genuinely meaningful — no artificial limit
+- Do not duplicate existing concepts — update them instead
 
 Output valid JSON only — no markdown fences, no explanation outside the JSON.
 """
@@ -131,8 +143,11 @@ Source title: {title}
 Source type: {source_type}
 Date: {today}
 
-EXISTING WIKI PAGES (only wikilink to these exact slugs or new slugs you create below):
+EXISTING WIKI PAGES — use ONLY these exact slugs for [[wikilinks]]:
 {wiki_schema}
+
+TAG VOCABULARY — reuse these tags, do not invent new ones unless absolutely necessary:
+{tag_vocabulary}
 
 Source text:
 ---
@@ -148,25 +163,31 @@ Create as many concept_pages and entity_pages as are genuinely meaningful. No ar
 {{
   "source_page": {{
     "title": "...",
-    "summary": "2-3 paragraph synthesis",
-    "key_points": ["bullet 1", "bullet 2", "bullet 3"],
-    "concepts": ["[[concept-slug]] — one-line note", ...],
+    "summary": "2-4 paragraph synthesis",
+    "key_points": ["bullet 1", "bullet 2", ...],
+    "concepts": ["[[concept-slug]] — one-line note on what this source adds", ...],
     "entities": ["[[entity-slug]] — role description", ...],
     "connections": ["[[related-page]] — how connected"],
-    "gaps": ["open question 1", "open question 2"]
+    "gaps": ["open question 1", ...]
   }},
   "concept_pages": [
     {{
-      "slug": "concept-slug",
+      "slug": "new-concept-slug",
       "title": "Concept Name",
       "tags": ["tag1", "tag2"],
-      "definition": "1-2 sentence plain-language definition",
-      "how_it_works": "1-2 sentences on mechanism",
-      "why_it_matters": "1-2 sentences on significance",
-      "nuances": "1 sentence on caveats",
-      "evidence": "1 sentence example from this source",
+      "definition": "1-3 sentence plain-language definition",
+      "how_it_works": "concrete mechanism",
+      "why_it_matters": "practical significance",
+      "nuances": "edge cases, caveats",
+      "evidence": "examples from this source",
       "connections": ["[[related]]"],
       "open_questions": ["question 1"]
+    }}
+  ],
+  "update_concepts": [
+    {{
+      "slug": "existing-concept-slug-from-wiki-schema",
+      "add_source_note": "one-line description of what THIS source adds to this concept"
     }}
   ],
   "entity_pages": [
@@ -176,9 +197,15 @@ Create as many concept_pages and entity_pages as are genuinely meaningful. No ar
       "entity_type": "person|org|tool|project|database",
       "tags": ["tag1"],
       "who_what": "1-2 sentence description",
-      "relevance": "1 sentence on why it matters",
+      "relevance": "why it matters in this wiki",
       "contributions": ["key contribution"],
       "connections": ["[[related]]"]
+    }}
+  ],
+  "update_entities": [
+    {{
+      "slug": "existing-entity-slug-from-wiki-schema",
+      "add_source_note": "one-line note on this entity's role in the current source"
     }}
   ]
 }}
@@ -283,7 +310,6 @@ def write_source_page(wiki_path: Path, slug: str, data: dict, source_ref: str, s
         source=source_ref,
         date_ingested=date.today().isoformat(),
         tags=tags,
-        scope=scope,
         summary=data.get("summary", ""),
         key_points=_fmt_bullets(data.get("key_points", [])),
         concepts=_fmt_bullets(data.get("concepts", [])),
@@ -313,7 +339,6 @@ def write_concept_page(wiki_path: Path, slug: str, data: dict, source_slug: str,
         title=data["title"],
         tags=tags,
         sources=_fmt_list(sources),
-        scope=scope,
         definition=data.get("definition", ""),
         how_it_works=data.get("how_it_works", ""),
         why_it_matters=data.get("why_it_matters", ""),
@@ -343,7 +368,6 @@ def write_entity_page(wiki_path: Path, slug: str, data: dict, source_slug: str, 
         entity_type=data.get("entity_type", "tool"),
         tags=tags,
         sources=_fmt_list(sources),
-        scope=scope,
         who_what=data.get("who_what", ""),
         relevance=data.get("relevance", ""),
         contributions=_fmt_bullets(data.get("contributions", [])),
@@ -354,26 +378,54 @@ def write_entity_page(wiki_path: Path, slug: str, data: dict, source_slug: str, 
 
 
 def update_index(wiki_path: Path, slug: str, page_type: str, title: str, summary_line: str) -> None:
+    """Update index.md with Nimbus-Brain format: [[folder/slug|slug]] in tables + stats header."""
     index_path = wiki_path / "index.md"
     if not index_path.exists():
-        index_path.write_text("# Wiki Index\n\nContent catalog. Updated on every ingest.\n\n")
+        index_path.write_text(
+            "# Wiki Index\n\n"
+            "Content catalog for the Medulla wiki. Updated on every ingest.\n\n"
+            f"**Stats:** 0 sources · 0 concept pages · 0 entity pages · "
+            f"Last updated: {date.today().isoformat()}\n\n---\n\n"
+        )
     content = index_path.read_text()
-    # Use a unique anchor pattern to detect existing entries
+
     _DIR = {"source": "sources", "concept": "concepts", "entity": "entities"}
-    entry_anchor = f"[[{_DIR.get(page_type, page_type + 's')}/{slug}|{slug}]]"
+    dir_name = _DIR.get(page_type, f"{page_type}s")
+    entry_anchor = f"[[{dir_name}/{slug}|{slug}]]"
+
     if entry_anchor in content:
-        return  # already indexed, skip
+        _refresh_index_stats(index_path)
+        return  # already indexed
+
     entry = f"| {entry_anchor} | {summary_line[:80]} |\n"
-    _PLURAL = {"source": "Sources", "concept": "Concepts", "entity": "Entities"}
-    section = f"## {_PLURAL.get(page_type, page_type.capitalize() + 's')}"
+    _SECTION = {"source": "## Sources", "concept": "## Concepts", "entity": "## Entities"}
+    section = _SECTION.get(page_type, f"## {page_type.capitalize()}s")
+
     if section not in content:
         content += f"\n{section}\n\n| Page | Summary |\n|---|---|\n"
+
     content = content.replace(
         f"{section}\n\n| Page | Summary |\n|---|---|\n",
         f"{section}\n\n| Page | Summary |\n|---|---|\n{entry}",
         1,
     )
     index_path.write_text(content)
+    _refresh_index_stats(index_path)
+
+
+def _refresh_index_stats(index_path: Path) -> None:
+    """Recompute the stats line in index.md from actual link counts."""
+    content = index_path.read_text()
+    sources = content.count("[[sources/")
+    concepts = content.count("[[concepts/")
+    entities = content.count("[[entities/")
+    stats = (f"**Stats:** {sources} sources · {concepts} concept pages · "
+             f"{entities} entity pages · Last updated: {date.today().isoformat()}")
+    updated = re.sub(
+        r"\*\*Stats:\*\*.*?Last updated: \d{4}-\d{2}-\d{2}", stats, content
+    )
+    if updated != content:
+        index_path.write_text(updated)
 
 
 def append_log(wiki_path: Path, operation: str, title: str, details: str = "") -> None:
