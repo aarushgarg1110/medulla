@@ -29,6 +29,7 @@ def intake_to_raw(
     wiki_path: Path,
     source: str,
     title: str | None = None,
+    force: bool = False,
 ) -> Path:
     """Copy/fetch source into wiki/raw/ and register in pending_ingests.
 
@@ -53,7 +54,7 @@ def intake_to_raw(
         import tempfile
         tmp = Path(tempfile.mktemp(suffix=".md", prefix=f"{slug}_"))
         tmp.write_text(f"---\nurl: {source}\ntitle: {final_title}\nsource_type: url\n---\n\n{text}")
-        queue_pending(conn, str(tmp), "url", final_title)
+        queue_pending(conn, str(tmp), "url", final_title, force=force)
         return tmp
 
     src = Path(source)
@@ -63,7 +64,7 @@ def intake_to_raw(
     raw_path = raw_dir / src.name
     shutil.copy2(src, raw_path)
     source_type = src.suffix.lstrip(".").lower() or "text"
-    queue_pending(conn, str(raw_path), source_type, title or src.stem)
+    queue_pending(conn, str(raw_path), source_type, title or src.stem, force=force)
     return raw_path
 
 
@@ -171,6 +172,31 @@ def _extract_frontmatter_url(content: str) -> str | None:
 
 # ── Core LLM pipeline ─────────────────────────────────────────────────────────
 
+def _extract_summary(content: str) -> str:
+    """Extract first substantive sentence from wiki page content for index display."""
+    in_frontmatter = False
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped == "---":
+            in_frontmatter = not in_frontmatter
+            continue
+        if in_frontmatter:
+            continue
+        if not stripped or stripped.startswith("#"):
+            continue
+        return stripped[:80]
+    return ""
+
+
+def _clean_slug(slug: str) -> str:
+    """Strip folder prefixes and reject placeholder slugs from LLM template copying."""
+    slug = slug.split("/")[-1] if "/" in slug else slug
+    # Reject slugs that are literally the prompt placeholder examples
+    _PLACEHOLDERS = {"concept-slug", "entity-slug", "actual-concept-name", "actual-entity-name",
+                     "existing-concept-slug", "existing-entity-slug", "new-concept-slug"}
+    return "" if slug in _PLACEHOLDERS else slug
+
+
 def _build_wiki_schema(wiki_path: Path) -> str:
     """Build a compact schema of all existing wiki pages for LLM injection.
 
@@ -273,7 +299,7 @@ def _run_llm_pipeline(
     # ── Stage 2: per-concept calls ────────────────────────────────────────────
     concept_slugs = []
     for i, nc in enumerate(new_concepts, 1):
-        slug = nc.get("slug") or slugify(nc.get("title", "unknown"))
+        slug = _clean_slug(nc.get("slug") or slugify(nc.get("title", "unknown")))
         concept_prompt = CONCEPT_PROMPT_TEMPLATE.format(
             title=nc.get("title", slug),
             concept_slug=slug,
@@ -302,7 +328,7 @@ def _run_llm_pipeline(
     # ── Stage 3: per-entity calls ─────────────────────────────────────────────
     entity_slugs = []
     for i, ne in enumerate(new_entities, 1):
-        slug = ne.get("slug") or slugify(ne.get("title", "unknown"))
+        slug = _clean_slug(ne.get("slug") or slugify(ne.get("title", "unknown")))
         entity_prompt = ENTITY_PROMPT_TEMPLATE.format(
             title=ne.get("title", slug),
             entity_slug=slug,
@@ -329,7 +355,7 @@ def _run_llm_pipeline(
     # ── Stage 4: update existing pages (no LLM call needed) ──────────────────
     updated_concepts = []
     for uc in plan.get("update_concepts", []):
-        slug = uc.get("slug", "").strip()
+        slug = _clean_slug(uc.get("slug", "").strip())
         if not slug:
             continue
         existing_path = wiki_path / "concepts" / f"{slug}.md"
@@ -339,7 +365,7 @@ def _run_llm_pipeline(
 
     updated_entities = []
     for ue in plan.get("update_entities", []):
-        slug = ue.get("slug", "").strip()
+        slug = _clean_slug(ue.get("slug", "").strip())
         if not slug:
             continue
         existing_path = wiki_path / "entities" / f"{slug}.md"
@@ -438,13 +464,14 @@ def store_wiki_page(
             if not raw_dest.exists():
                 shutil.copy2(src, raw_dest)
 
-    # WebFetch URL → append to shared url-references.md log
-    if source_url:
+    # WebFetch URL → append to url-references.md ONLY when no local file was copied.
+    # If source_path was provided, the file is in raw/ and its frontmatter has the URL.
+    if source_url and not source_path:
         append_url_reference(wiki_path, slug, source_url, title=title)
 
     upsert_wiki_page(conn, slug, page_type, title, content, page_path,
                      tags=tags or [], scope=scope)
-    update_index(wiki_path, slug, page_type, title, "")
+    update_index(wiki_path, slug, page_type, title, _extract_summary(content))
     append_log(wiki_path, "ingest", title, "Stored via medulla_ingest MCP tool")
 
     return {"slug": slug, "type": page_type, "path": str(page_path)}

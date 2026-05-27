@@ -452,3 +452,25 @@ def test_parse_llm_response_strips_fences():
 def test_parse_llm_response_bad_json_returns_fallback():
     result = _parse_llm_response("completely invalid!!!")
     assert "source_page" in result
+
+
+def test_store_wiki_page_summary_in_index(db, tmp_path):
+    """store_wiki_page extracts summary from content for index.md display."""
+    from medulla.semantic.ingest import store_wiki_page
+    wiki = tmp_path / "wiki"
+    content = "---\ntitle: LogD\n---\n\n## Definition\n\nLogD is the distribution coefficient."
+    store_wiki_page(db, wiki, "LogD", content, page_type="concept")
+    index = (wiki / "index.md").read_text()
+    assert "LogD is the distribution coefficient" in index
+
+
+def test_extract_summary_skips_frontmatter(tmp_path):
+    """_extract_summary skips frontmatter and headings, returns first body line."""
+    from medulla.semantic.ingest import _extract_summary
+    content = "---\ntitle: Test\ntags: [a]\n---\n\n## Definition\n\nThis is the definition."
+    assert _extract_summary(content) == "This is the definition."
+
+
+def test_extract_summary_empty_content():
+    from medulla.semantic.ingest import _extract_summary
+    assert _extract_summary("") == ""

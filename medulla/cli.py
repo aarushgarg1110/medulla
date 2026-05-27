@@ -329,11 +329,13 @@ def ingest(
     source: Annotated[Optional[str], typer.Argument(help="File path or URL. Omit to process everything in raw/")] = None,
     title: Annotated[Optional[str], typer.Option("--title", "-t")] = None,
     scope: Annotated[str, typer.Option("--scope")] = "personal",
+    force: Annotated[bool, typer.Option("--force", "-f", help="Re-ingest even if already processed")] = False,
 ):
     """Ingest sources into the semantic wiki via raw/.
 
     No args: discover new files in raw/ + process all queued.
     With path/URL: copy/fetch to raw/ then process immediately.
+    --force: re-ingest even if this source was previously processed.
     """
     from pathlib import Path
     from medulla.db.database import connect
@@ -358,7 +360,7 @@ def ingest(
         # Intake to raw/ first (copy/fetch)
         with console.status(f"Copying to raw/: {source}"):
             try:
-                raw_path = intake_to_raw(conn, wiki_path, source, title)
+                raw_path = intake_to_raw(conn, wiki_path, source, title, force=force)
                 console.print(f"[dim]→ raw/{raw_path.name}[/dim]")
             except Exception as e:
                 console.print(f"[red]✗ Failed: {e}[/red]")

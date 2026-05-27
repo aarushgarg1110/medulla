@@ -184,3 +184,52 @@ def test_ollama_provider_generate_no_system(monkeypatch):
     provider = OllamaProvider("llama3.2", "http://localhost:11434")
     result = provider.generate("Hello")
     assert result == "response"
+
+
+def test_ollama_provider_streaming(monkeypatch):
+    """OllamaProvider streaming: on_token called per chunk, full text returned."""
+    import json
+    chunks = [
+        json.dumps({"message": {"content": "Hello"}}),
+        json.dumps({"message": {"content": " world"}}),
+        json.dumps({"message": {"content": ""}}),  # empty chunk ignored
+    ]
+
+    class MockStream:
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def raise_for_status(self): pass
+        def iter_lines(self): return iter(chunks)
+
+    monkeypatch.setattr("httpx.stream", lambda method, url, **kw: MockStream())
+    from medulla.llm import OllamaProvider
+    provider = OllamaProvider("llama3.2", "http://localhost:11434")
+    received = []
+    result = provider.generate("Hello", on_token=received.append)
+    assert result == "Hello world"
+    assert received == ["Hello", " world"]
+
+
+def test_ollama_provider_streaming_with_system(monkeypatch):
+    """OllamaProvider streaming includes system prompt in messages."""
+    import json
+    chunks = [json.dumps({"message": {"content": "ok"}})]
+
+    class MockStream:
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def raise_for_status(self): pass
+        def iter_lines(self): return iter(chunks)
+
+    captured = {}
+    def fake_stream(method, url, **kw):
+        captured["json"] = kw.get("json", {})
+        return MockStream()
+
+    monkeypatch.setattr("httpx.stream", fake_stream)
+    from medulla.llm import OllamaProvider
+    provider = OllamaProvider("llama3.2", "http://localhost:11434")
+    provider.generate("prompt", system="sys", on_token=lambda t: None)
+    messages = captured["json"]["messages"]
+    assert messages[0] == {"role": "system", "content": "sys"}
+    assert messages[1] == {"role": "user", "content": "prompt"}

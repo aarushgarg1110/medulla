@@ -96,23 +96,28 @@ def get_wiki_stats(conn: sqlite3.Connection) -> dict:
 
 # ── Pending ingest queue ───────────────────────────────────────────────────────
 
-def queue_pending(conn: sqlite3.Connection, source_path: str, source_type: str, title: str | None = None) -> int:
+def queue_pending(conn: sqlite3.Connection, source_path: str, source_type: str, title: str | None = None, force: bool = False) -> int:
     """Add source to pending queue. Idempotent:
-    - already queued → no-op, return existing id
+    - already queued → no-op
     - previously errored → reset to queued (retry)
-    - already done → no-op (don't re-process)
+    - already done + file exists → skip (already processed)
+    - already done + file missing → re-queue (file was deleted/re-added)
+    - force=True → always re-queue regardless
     """
+    import os
     existing = conn.execute(
         "SELECT id, status FROM pending_ingests WHERE source_path = ? ORDER BY id DESC LIMIT 1",
         (source_path,)
     ).fetchone()
 
     if existing:
-        if existing["status"] == "done":
-            return existing["id"]  # already processed, skip
         if existing["status"] == "queued":
-            return existing["id"]  # already queued, skip
-        # status == "error" → reset to queued for retry
+            return existing["id"]  # already pending, skip
+        if existing["status"] == "done" and not force:
+            if os.path.exists(source_path):
+                return existing["id"]  # done and file intact — skip
+            # file was deleted and re-added — re-queue automatically
+        # status == "error", or done+file missing, or force → reset to queued
         conn.execute(
             "UPDATE pending_ingests SET status='queued', error=NULL, queued_at=datetime('now') WHERE id=?",
             (existing["id"],)

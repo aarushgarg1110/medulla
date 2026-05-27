@@ -156,12 +156,35 @@ def test_queue_pending_resets_error_to_queued(db):
     assert get_pending_count(db) == 1
 
 
-def test_queue_pending_skips_done(db):
-    """Already-processed source is not re-queued."""
-    pid = queue_pending(db, "/paper.pdf", "pdf")
+def test_queue_pending_skips_done_file_exists(db, tmp_path):
+    """done + file still on disk → skip (already processed)."""
+    f = tmp_path / "paper.pdf"
+    f.write_bytes(b"pdf")
+    pid = queue_pending(db, str(f), "pdf")
     mark_pending_done(db, pid)
-    queue_pending(db, "/paper.pdf", "pdf")  # should be no-op
+    queue_pending(db, str(f), "pdf")  # file exists → skip
     assert get_pending_count(db) == 0
+
+
+def test_queue_pending_requeues_done_file_missing(db, tmp_path):
+    """done + file deleted → re-queue automatically."""
+    f = tmp_path / "paper.pdf"
+    f.write_bytes(b"pdf")
+    pid = queue_pending(db, str(f), "pdf")
+    mark_pending_done(db, pid)
+    f.unlink()  # simulate user deleting the raw file
+    queue_pending(db, str(f), "pdf")  # file gone → re-queue
+    assert get_pending_count(db) == 1
+
+
+def test_queue_pending_force_requeues_done(db, tmp_path):
+    """force=True re-queues even when done + file exists."""
+    f = tmp_path / "paper.pdf"
+    f.write_bytes(b"pdf")
+    pid = queue_pending(db, str(f), "pdf")
+    mark_pending_done(db, pid)
+    queue_pending(db, str(f), "pdf", force=True)  # force → re-queue
+    assert get_pending_count(db) == 1
 
 
 def test_mark_pending_done(db):

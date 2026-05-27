@@ -112,14 +112,37 @@ class OllamaProvider(LLMProvider):
 
     def generate(self, prompt: str, system: str | None = None, on_token=None) -> str:
         import httpx
+        import json as _json
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
+
+        if on_token:
+            # Streaming — emit tokens as they arrive, no timeout risk
+            full = []
+            with httpx.stream(
+                "POST",
+                f"{self._host}/api/chat",
+                json={"model": self._model, "messages": messages, "stream": True},
+                timeout=600.0,
+            ) as r:
+                r.raise_for_status()
+                for line in r.iter_lines():
+                    if not line:
+                        continue
+                    chunk = _json.loads(line)
+                    text = chunk.get("message", {}).get("content", "")
+                    if text:
+                        on_token(text)
+                        full.append(text)
+            return "".join(full)
+
+        # Non-streaming (no on_token) — longer timeout for big models
         response = httpx.post(
             f"{self._host}/api/chat",
             json={"model": self._model, "messages": messages, "stream": False},
-            timeout=120.0,
+            timeout=600.0,
         )
         response.raise_for_status()
         return response.json()["message"]["content"]

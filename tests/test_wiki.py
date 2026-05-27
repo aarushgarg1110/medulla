@@ -4,6 +4,7 @@ from pathlib import Path
 from medulla.semantic.wiki import (
     slugify, write_source_page, write_concept_page, write_entity_page,
     update_index, append_log, lint_wiki, _fmt_bullets, _fmt_tags, _fmt_list,
+    _yaml_title,
 )
 
 
@@ -294,3 +295,30 @@ def test_fmt_list_empty():
 def test_fmt_list_items():
     result = _fmt_list(["source-1", "source-2"])
     assert '"source-1"' in result
+
+
+def test_yaml_title_no_colon():
+    assert _yaml_title("Adam Optimizer") == "Adam Optimizer"
+
+
+def test_yaml_title_with_colon():
+    result = _yaml_title("Adam: A Method for Stochastic Optimization")
+    assert result.startswith('"') and result.endswith('"')
+    assert "Adam: A Method" in result
+
+
+def test_yaml_title_with_brackets():
+    result = _yaml_title("Paper [2024]")
+    assert result.startswith('"')
+
+
+def test_source_page_title_with_colon_is_valid_yaml(tmp_path):
+    """write_source_page quotes titles containing colons so Obsidian parses them."""
+    wiki = tmp_path / "wiki"
+    data = {"title": "Adam: A Method for Stochastic Optimization", "tags": [], "summary": "S",
+            "key_points": [], "concepts": [], "entities": [], "connections": [], "gaps": []}
+    path = write_source_page(wiki, "adam", data, "file.pdf")
+    content = path.read_text()
+    # title line must have the colon-containing value quoted
+    title_line = next(l for l in content.splitlines() if l.startswith("title:"))
+    assert '"Adam: A Method' in title_line

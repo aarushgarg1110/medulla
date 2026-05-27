@@ -172,10 +172,10 @@ Wikilinks in source_page: use [[concepts/slug]], [[entities/slug]], [[sources/sl
     "gaps": ["open question 1"]
   }},
   "new_concepts": [
-    {{"slug": "concept-slug", "title": "Concept Name", "brief": "one sentence on what to capture"}}
+    {{"slug": "actual-concept-name", "title": "Actual Concept Name", "brief": "one sentence on what to capture"}}
   ],
   "new_entities": [
-    {{"slug": "entity-slug", "title": "Entity Name", "entity_type": "person|org|tool|project|database", "brief": "one sentence"}}
+    {{"slug": "actual-entity-name", "title": "Actual Entity Name", "entity_type": "person|org|tool|project|database", "brief": "one sentence"}}
   ],
   "update_concepts": [
     {{"slug": "existing-concept-slug", "add_source_note": "what this source contributes to this concept"}}
@@ -350,7 +350,7 @@ def write_source_page(wiki_path: Path, slug: str, data: dict, source_ref: str, s
     sources_dir.mkdir(exist_ok=True)
     tags = _fmt_tags(data.get("tags", []))
     content = SOURCE_TEMPLATE.format(
-        title=data["title"],
+        title=_yaml_title(data["title"]),
         source=source_ref,
         date_ingested=date.today().isoformat(),
         tags=tags,
@@ -380,7 +380,7 @@ def write_concept_page(wiki_path: Path, slug: str, data: dict, source_slug: str,
     sources = list(dict.fromkeys(existing_sources + [source_slug]))
     tags = _fmt_tags(data.get("tags", []))
     content = CONCEPT_TEMPLATE.format(
-        title=data["title"],
+        title=_yaml_title(data["title"]),
         tags=tags,
         sources=_fmt_list(sources),
         definition=data.get("definition", ""),
@@ -408,7 +408,7 @@ def write_entity_page(wiki_path: Path, slug: str, data: dict, source_slug: str, 
     sources = list(dict.fromkeys(existing_sources + [source_slug]))
     tags = _fmt_tags(data.get("tags", []))
     content = ENTITY_TEMPLATE.format(
-        title=data["title"],
+        title=_yaml_title(data["title"]),
         entity_type=data.get("entity_type", "tool"),
         tags=tags,
         sources=_fmt_list(sources),
@@ -532,6 +532,19 @@ def lint_wiki(wiki_path: Path) -> dict:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _yaml_title(title: str) -> str:
+    """Quote title if it contains YAML-special chars (colon, hash, brackets).
+
+    'Adam: A Method...' → '"Adam: A Method..."'
+    Without quoting, YAML interprets the second colon as a mapping separator,
+    breaking Obsidian's frontmatter parser and showing raw YAML instead of Properties.
+    """
+    if any(c in title for c in (':', '#', '[', ']', '{', '}')):
+        escaped = title.replace('"', '\\"')
+        return f'"{escaped}"'
+    return title
+
 
 def _fmt_bullets(items: list[str]) -> str:
     if not items:
