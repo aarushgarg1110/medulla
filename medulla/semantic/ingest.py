@@ -207,36 +207,57 @@ def _run_llm_pipeline(
     scope: str = "personal",
     on_token=None,
 ) -> dict:
-    """Call LLM, parse response, write all wiki pages to disk + DB."""
+    """Multi-call ingest pipeline: plan → source page → per-concept → per-entity.
+
+    Each call targets <2000 output tokens, fitting within Bedrock's streaming cap.
+    CLI sees checkpoint lines via print(); on_token still streams tokens within each call.
+    """
     from medulla.semantic.wiki import (
-        INGEST_SYSTEM_PROMPT, INGEST_PROMPT_TEMPLATE,
+        PLAN_SYSTEM_PROMPT, PLAN_PROMPT_TEMPLATE,
+        CONCEPT_PROMPT_TEMPLATE, ENTITY_PROMPT_TEMPLATE,
+        TAG_VOCABULARY,
         slugify, write_source_page, write_concept_page,
         write_entity_page, update_index, append_log,
     )
     from medulla.semantic.store import upsert_wiki_page
     from datetime import date
 
-    from medulla.semantic.wiki import TAG_VOCABULARY
     source_type = "url" if source_ref.startswith("http") else "file"
     schema = _build_wiki_schema(wiki_path)
-    prompt = INGEST_PROMPT_TEMPLATE.format(
-        title=title,
-        source_type=source_type,
-        today=date.today().isoformat(),
-        text=text[:40_000],
-        wiki_schema=schema,
-        tag_vocabulary=", ".join(TAG_VOCABULARY),
-    )
-    response = provider.generate(prompt, system=INGEST_SYSTEM_PROMPT, on_token=on_token)
-    data = _parse_llm_response(response)
-
-    source_slug = slugify(title)
+    tag_vocab = ", ".join(TAG_VOCABULARY)
+    today = date.today().isoformat()
+    truncated_text = text[:40_000]
     wiki_path.mkdir(parents=True, exist_ok=True)
 
-    source_data = data.get("source_page", {})
-    source_data["title"] = source_data.get("title") or title
-    source_data["tags"] = source_data.get("tags", [])
+    # ── Stage 1: planning call ────────────────────────────────────────────────
+    plan_prompt = PLAN_PROMPT_TEMPLATE.format(
+        title=title,
+        source_type=source_type,
+        today=today,
+        text=truncated_text,
+        wiki_schema=schema,
+        tag_vocabulary=tag_vocab,
+    )
+    plan_response = provider.generate(plan_prompt, system=PLAN_SYSTEM_PROMPT, on_token=on_token)
+    plan = _parse_llm_response(plan_response)
 
+    source_data = plan.get("source_page", {})
+    # Slug from LLM title — better than programmatic extraction for messy files
+    # (e.g. Perplexity exports have "# You" as H1; LLM chooses a real title)
+    source_data["title"] = source_data.get("title") or title
+    source_slug = slugify(source_data["title"])
+    source_data.setdefault("tags", [])
+
+    new_concepts = plan.get("new_concepts", [])
+    new_entities = plan.get("new_entities", [])
+    n_concepts = len(new_concepts)
+    n_entities = len(new_entities)
+    n_updates = len(plan.get("update_concepts", [])) + len(plan.get("update_entities", []))
+
+    print(f"  ✓ Source page ready — plan: {n_concepts} concepts, {n_entities} entities"
+          + (f", {n_updates} updates" if n_updates else ""))
+
+    # Write source page
     source_path = write_source_page(wiki_path, source_slug, source_data, source_ref, scope)
     upsert_wiki_page(
         conn, source_slug, "source", source_data["title"],
@@ -246,9 +267,26 @@ def _run_llm_pipeline(
     update_index(wiki_path, source_slug, "source", source_data["title"],
                  (source_data.get("summary") or "")[:80])
 
+    # Rebuild schema after adding source page so concepts can wikilink it
+    schema = _build_wiki_schema(wiki_path)
+
+    # ── Stage 2: per-concept calls ────────────────────────────────────────────
     concept_slugs = []
-    for cp in data.get("concept_pages", []):
-        slug = cp.get("slug") or slugify(cp.get("title", "unknown"))
+    for i, nc in enumerate(new_concepts, 1):
+        slug = nc.get("slug") or slugify(nc.get("title", "unknown"))
+        concept_prompt = CONCEPT_PROMPT_TEMPLATE.format(
+            title=nc.get("title", slug),
+            concept_slug=slug,
+            brief=nc.get("brief", ""),
+            source_title=title,
+            wiki_schema=schema,
+            tag_vocabulary=tag_vocab,
+            text=truncated_text[:8_000],
+        )
+        concept_response = provider.generate(concept_prompt, system=PLAN_SYSTEM_PROMPT, on_token=on_token)
+        cp = _parse_llm_response(concept_response)
+        cp["title"] = cp.get("title") or nc.get("title", slug)
+
         path = write_concept_page(wiki_path, slug, cp, source_slug, scope)
         upsert_wiki_page(conn, slug, "concept", cp.get("title", slug),
                          path.read_text(), path, tags=cp.get("tags", []),
@@ -256,10 +294,29 @@ def _run_llm_pipeline(
         update_index(wiki_path, slug, "concept", cp.get("title", slug),
                      cp.get("definition", "")[:80])
         concept_slugs.append(slug)
+        print(f"    ✓ {slug} ({i}/{n_concepts})")
 
+    if concept_slugs:
+        schema = _build_wiki_schema(wiki_path)
+
+    # ── Stage 3: per-entity calls ─────────────────────────────────────────────
     entity_slugs = []
-    for ep in data.get("entity_pages", []):
-        slug = ep.get("slug") or slugify(ep.get("title", "unknown"))
+    for i, ne in enumerate(new_entities, 1):
+        slug = ne.get("slug") or slugify(ne.get("title", "unknown"))
+        entity_prompt = ENTITY_PROMPT_TEMPLATE.format(
+            title=ne.get("title", slug),
+            entity_slug=slug,
+            entity_type=ne.get("entity_type", "tool"),
+            brief=ne.get("brief", ""),
+            source_title=title,
+            wiki_schema=schema,
+            tag_vocabulary=tag_vocab,
+            text=truncated_text[:8_000],
+        )
+        entity_response = provider.generate(entity_prompt, system=PLAN_SYSTEM_PROMPT, on_token=on_token)
+        ep = _parse_llm_response(entity_response)
+        ep["title"] = ep.get("title") or ne.get("title", slug)
+
         path = write_entity_page(wiki_path, slug, ep, source_slug, scope)
         upsert_wiki_page(conn, slug, "entity", ep.get("title", slug),
                          path.read_text(), path, tags=ep.get("tags", []),
@@ -267,10 +324,11 @@ def _run_llm_pipeline(
         update_index(wiki_path, slug, "entity", ep.get("title", slug),
                      ep.get("who_what", "")[:80])
         entity_slugs.append(slug)
+        print(f"    ✓ {slug} ({i}/{n_entities})")
 
-    # UPDATE pathway — add this source to existing concept/entity pages' sources list
+    # ── Stage 4: update existing pages (no LLM call needed) ──────────────────
     updated_concepts = []
-    for uc in data.get("update_concepts", []):
+    for uc in plan.get("update_concepts", []):
         slug = uc.get("slug", "").strip()
         if not slug:
             continue
@@ -280,7 +338,7 @@ def _run_llm_pipeline(
             updated_concepts.append(slug)
 
     updated_entities = []
-    for ue in data.get("update_entities", []):
+    for ue in plan.get("update_entities", []):
         slug = ue.get("slug", "").strip()
         if not slug:
             continue
@@ -288,6 +346,9 @@ def _run_llm_pipeline(
         if existing_path.exists():
             _add_source_to_page(existing_path, source_slug, conn)
             updated_entities.append(slug)
+
+    if updated_concepts or updated_entities:
+        print(f"    ↻ Updated existing: {', '.join(updated_concepts + updated_entities)}")
 
     updated_note = ""
     if updated_concepts or updated_entities:

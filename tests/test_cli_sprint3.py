@@ -33,10 +33,62 @@ def test_use_switches_to_anthropic():
     assert "anthropic" in result.output
 
 
-def test_use_switches_to_ollama():
+def test_use_anthropic_warns_no_api_key(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    result = runner.invoke(app, ["use", "anthropic"])
+    assert result.exit_code == 0
+    assert "ANTHROPIC_API_KEY" in result.output
+
+
+def test_use_anthropic_no_warning_when_key_set(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    result = runner.invoke(app, ["use", "anthropic"])
+    assert result.exit_code == 0
+    assert "ANTHROPIC_API_KEY" not in result.output
+
+
+def test_use_with_model_flag(monkeypatch):
+    result = runner.invoke(app, ["use", "anthropic", "--model", "claude-haiku-4-5-20251001"])
+    assert result.exit_code == 0
+    assert "claude-haiku-4-5-20251001" in result.output
+
+
+def test_use_switches_to_ollama(monkeypatch):
+    import httpx, medulla.cli as cli_mod
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: (_ for _ in ()).throw(Exception("refused")))
+    monkeypatch.setattr(cli_mod.subprocess, "run",
+        lambda *a, **kw: type("R", (), {"stdout": "", "returncode": 1})())
     result = runner.invoke(app, ["use", "ollama"])
     assert result.exit_code == 0
     assert "ollama" in result.output
+    assert "ollama serve" in result.output  # warning shown
+
+
+def test_use_ollama_server_up_shows_models(monkeypatch):
+    import httpx, medulla.cli as cli_mod
+    class FakeResp:
+        def raise_for_status(self): pass
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: FakeResp())
+    monkeypatch.setattr(cli_mod.subprocess, "run", lambda *a, **kw: type("R", (), {
+        "stdout": "NAME           ID\nllama3.2:3b    abc123\n", "returncode": 0
+    })())
+    result = runner.invoke(app, ["use", "ollama"])
+    assert result.exit_code == 0
+    assert "llama3.2:3b" in result.output
+
+
+def test_use_ollama_with_model_flag(monkeypatch):
+    import httpx
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: (_ for _ in ()).throw(Exception("refused")))
+    result = runner.invoke(app, ["use", "ollama", "--model", "mistral:7b"])
+    assert result.exit_code == 0
+    assert "mistral:7b" in result.output
+
+
+def test_use_bedrock_with_model_flag():
+    result = runner.invoke(app, ["use", "bedrock", "--model", "us.anthropic.claude-haiku-4-5"])
+    assert result.exit_code == 0
+    assert "us.anthropic.claude-haiku-4-5" in result.output
 
 
 def test_use_invalid_provider():

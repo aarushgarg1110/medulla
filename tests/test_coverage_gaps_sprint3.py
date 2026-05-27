@@ -178,3 +178,166 @@ def test_ingest_pdf_source(tmp_path):
     results = process_pending(wiki, conn, MockProvider())
     assert len(results) == 1
     assert results[0]["total_pages"] >= 1
+
+
+# ── scanner.py — error/skipped-mtime/agent-skipped branches ─────────────────
+
+def test_scan_errors_incremented_on_process_exception(tmp_path, monkeypatch):
+    """session processing exception increments errors counter (lines 39-40)."""
+    from medulla.episodic.scanner import scan
+    monkeypatch.setattr("medulla.episodic.scanner.CLAUDE_PROJECTS_DIR", tmp_path)
+    monkeypatch.setattr("medulla.episodic.scanner.KIRO_SESSIONS_DIR", tmp_path / "none")
+    # Write a non-empty JSONL that will fail parse as a valid session
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    bad = proj / "bad-session.jsonl"
+    bad.write_text("not valid json at all!!!\n")
+    # Patch _process_session to raise
+    import medulla.episodic.scanner as scanner_mod
+    monkeypatch.setattr(scanner_mod, "_process_session", lambda *a: (_ for _ in ()).throw(RuntimeError("boom")))
+    from medulla.db.database import connect
+    conn = connect(tmp_path / "t.db")
+    counts = scan(conn)
+    assert counts["errors"] >= 1
+
+
+def test_scan_agent_skipped_mtime(tmp_path, monkeypatch):
+    """Agent skipped_mtime branch (lines 47-48)."""
+    from tests.conftest import claude_user, make_claude_jsonl
+    from medulla.episodic.scanner import scan
+    from medulla.db.database import connect
+
+    monkeypatch.setattr("medulla.episodic.scanner.CLAUDE_PROJECTS_DIR", tmp_path)
+    monkeypatch.setattr("medulla.episodic.scanner.KIRO_SESSIONS_DIR", tmp_path / "none")
+
+    # Write parent session + agent
+    parent_id = "parent-aaa"
+    proj = tmp_path / "proj"
+    (proj / parent_id / "subagents").mkdir(parents=True)
+    (proj / f"{parent_id}.jsonl").write_text(make_claude_jsonl([claude_user("task", session_id=parent_id)]))
+    agent_path = proj / parent_id / "subagents" / "agent-agt1.jsonl"
+    agent_path.write_text(make_claude_jsonl([claude_user("agent task", session_id=parent_id)]))
+
+    conn = connect(tmp_path / "t.db")
+    counts1 = scan(conn)
+    assert counts1["agents_indexed"] == 1
+
+    counts2 = scan(conn)
+    assert counts2["agents_indexed"] == 0  # skipped (mtime unchanged)
+
+
+def test_scan_empty_session_increments_empty(tmp_path, monkeypatch):
+    """Empty/stub session increments empty counter (lines 37-38)."""
+    from medulla.episodic.scanner import scan
+    from medulla.db.database import connect
+
+    monkeypatch.setattr("medulla.episodic.scanner.CLAUDE_PROJECTS_DIR", tmp_path)
+    monkeypatch.setattr("medulla.episodic.scanner.KIRO_SESSIONS_DIR", tmp_path / "none")
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    # Write a JSONL with only assistant messages (no user turns → parse_session returns None)
+    stub = proj / "stub-sess.jsonl"
+    stub.write_text('{"type":"message","role":"assistant","content":[{"type":"text","text":"hi"}]}\n')
+
+    conn = connect(tmp_path / "t.db")
+    counts = scan(conn)
+    assert counts["empty"] >= 1
+
+
+def test_scan_agent_none_parse_returns_skipped(tmp_path, monkeypatch):
+    """Agent parse returning None → 'skipped' (line 109)."""
+    from medulla.episodic.scanner import scan
+    from medulla.db.database import connect
+    import medulla.episodic.scanner as scanner_mod
+
+    monkeypatch.setattr("medulla.episodic.scanner.CLAUDE_PROJECTS_DIR", tmp_path)
+    monkeypatch.setattr("medulla.episodic.scanner.KIRO_SESSIONS_DIR", tmp_path / "none")
+    monkeypatch.setattr(scanner_mod, "parse_agent_session", lambda _: None)
+
+    from tests.conftest import claude_user, make_claude_jsonl
+    parent_id = "par-bbb"
+    proj = tmp_path / "proj"
+    (proj / parent_id / "subagents").mkdir(parents=True)
+    (proj / f"{parent_id}.jsonl").write_text(make_claude_jsonl([claude_user("task", session_id=parent_id)]))
+    (proj / parent_id / "subagents" / "agent-x.jsonl").write_text(make_claude_jsonl([claude_user("t", session_id=parent_id)]))
+
+    conn = connect(tmp_path / "t.db")
+    counts = scan(conn)
+    # agent was discovered but parse returned None → no crash, agents_indexed stays 0
+    assert counts["agents_indexed"] == 0
+
+
+# ── url.py — trafilatura fallback + _extract_title missing (lines 46, 55-57) ─
+
+def test_url_extract_text_falls_back_without_trafilatura(monkeypatch):
+    """_extract_text falls back to HTML stripping when trafilatura unavailable (lines 55-57)."""
+    import sys
+    import medulla.semantic.sources.url as url_mod
+    # Remove trafilatura from sys.modules to simulate it being absent
+    monkeypatch.setitem(sys.modules, "trafilatura", None)
+    html = "<html><body><p>Hello world content here.</p></body></html>"
+    text = url_mod._extract_text(html)
+    assert "Hello world" in text
+
+
+def test_url_extract_title_fallback_returns_untitled(monkeypatch):
+    """_extract_title returns 'Untitled' when no <title> tag (line 46)."""
+    import medulla.semantic.sources.url as url_mod
+    title = url_mod._extract_title("<html><body><p>No title here.</p></body></html>")
+    assert title == "Untitled"
+
+
+# ── ingest.py — empty slug in update pathway + parse fallback ─────────────────
+
+def test_update_concepts_skips_empty_slug(db, tmp_path):
+    """update_concepts entry with empty slug is silently skipped (lines 332-334)."""
+    import json
+    from medulla.semantic.ingest import intake_to_raw, process_pending
+
+    class EmptySlugProvider:
+        @property
+        def name(self): return "mock"
+        @property
+        def model(self): return "mock"
+        def generate(self, prompt, system=None, on_token=None):
+            return json.dumps({
+                "source_page": {"title": "T", "summary": "S", "key_points": [],
+                                "tags": [], "concepts": [], "entities": [], "connections": [], "gaps": []},
+                "new_concepts": [],
+                "new_entities": [],
+                "update_concepts": [{"slug": "", "add_source_note": "note"}],  # empty slug
+                "update_entities": [{"slug": "  ", "add_source_note": "note"}],  # whitespace slug
+            })
+
+    wiki = tmp_path / "wiki"
+    md = tmp_path / "paper.md"
+    md.write_text("# Test\n\nContent.")
+    intake_to_raw(db, wiki, str(md))
+    results = process_pending(wiki, db, EmptySlugProvider())
+    assert len(results) == 1
+    assert results[0].get("error") is None
+
+
+def test_parse_llm_response_returns_concept_entity_fallback():
+    """_parse_llm_response fallback includes concept_pages/entity_pages keys (lines 484-485)."""
+    from medulla.semantic.ingest import _parse_llm_response
+    result = _parse_llm_response("totally invalid!!!")
+    assert "concept_pages" in result
+    assert "entity_pages" in result
+
+
+# ── config.py — bad TOML is silently ignored (line 98-99) ─────────────────────
+
+def test_config_bad_toml_silently_ignored(tmp_path, monkeypatch):
+    """Malformed TOML triggers except Exception: pass — defaults are kept (lines 98-99)."""
+    import medulla.config as cfg
+    medulla_dir = tmp_path / ".medulla"
+    medulla_dir.mkdir()
+    (medulla_dir / "config.toml").write_text("this is not valid toml !!!! %%%")
+    monkeypatch.setenv("MEDULLA_DIR", str(medulla_dir))
+    cfg._config = None
+    loaded = cfg.get_config()
+    # Defaults intact — bad TOML didn't crash
+    assert loaded.llm.active == "bedrock"
+    cfg._config = None

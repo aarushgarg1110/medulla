@@ -130,7 +130,7 @@ def test_update_index_no_duplicate(tmp_path):
     update_index(wiki, "logd-prediction", "concept", "LogD", "summary")
     index = (wiki / "index.md").read_text()
     # The wikilink pattern appears exactly once (not twice = not duplicated)
-    assert index.count("[[concepts/logd-prediction|logd-prediction]]") == 1
+    assert index.count("[[concepts/logd-prediction]]") == 1
 
 
 def test_append_log(tmp_path):

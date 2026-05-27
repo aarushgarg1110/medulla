@@ -122,23 +122,20 @@ TAG_VOCABULARY = [
     "benchmarks", "evaluation", "robustness", "security",
 ]
 
-INGEST_SYSTEM_PROMPT = """\
-You are maintaining a personal knowledge wiki following the Karpathy LLM Wiki pattern.
-Your job is to read a source document and produce structured wiki pages in JSON format.
+PLAN_SYSTEM_PROMPT = """\
+You are maintaining a personal knowledge wiki using the Karpathy LLM Wiki pattern.
+Your job is to read source documents and produce structured wiki pages in JSON format.
 
 Rules:
-- Use [[slug]] wikilinks for cross-references (slugs are lowercase-hyphenated, e.g. [[multi-head-attention]])
-- Be concrete and specific — extract actual facts, findings, and connections from the source
-- Tags: reuse existing tags from the vocabulary before inventing new ones
-- For EXISTING concepts/entities in the wiki schema: add this source to their sources list (the update pathway)
-- For NEW concepts/entities not in the schema: create full pages
-- Create as many concept and entity pages as are genuinely meaningful — no artificial limit
-- Do not duplicate existing concepts — update them instead
-
-Output valid JSON only — no markdown fences, no explanation outside the JSON.
+- Use [[folder/slug]] wikilinks: [[concepts/slug]], [[entities/slug]], [[sources/slug]]
+- Be concrete: extract actual facts, findings, numbers, and connections from the source
+- Tags: reuse the provided tag vocabulary before inventing new tags
+- Wikilinks: only link to slugs in the provided wiki schema or pages you're creating in this response
+- Output valid JSON only — no markdown fences, no explanation outside the JSON
 """
 
-INGEST_PROMPT_TEMPLATE = """\
+PLAN_PROMPT_TEMPLATE = """\
+STAGE: PLAN
 Source title: {title}
 Source type: {source_type}
 Date: {today}
@@ -146,7 +143,7 @@ Date: {today}
 EXISTING WIKI PAGES — use ONLY these exact slugs for [[wikilinks]]:
 {wiki_schema}
 
-TAG VOCABULARY — reuse these tags, do not invent new ones unless absolutely necessary:
+TAG VOCABULARY — reuse before inventing new tags:
 {tag_vocabulary}
 
 Source text:
@@ -154,60 +151,107 @@ Source text:
 {text}
 ---
 
-Produce a JSON object synthesizing this source into the wiki.
-WIKILINK RULES: Use [[concepts/slug]], [[entities/slug]], [[sources/slug]] format.
-Only link to slugs in the EXISTING WIKI PAGES list above, or to new pages you create in this response.
-Never invent slugs that don't exist — this fragments the graph.
-Create as many concept_pages and entity_pages as are genuinely meaningful. No artificial limits.
+Produce a JSON object with:
+1. source_page — complete source wiki page (title, summary, key_points, tags, concept/entity/connection/gap lists)
+2. new_concepts — NEW concept page briefs (slugs NOT in the existing wiki schema above)
+3. new_entities — NEW entity page briefs (slugs NOT in the existing wiki schema above)
+4. update_concepts — existing concept slugs (from wiki schema) that this source adds to
+5. update_entities — existing entity slugs (from wiki schema) that this source adds to
+
+Wikilinks in source_page: use [[concepts/slug]], [[entities/slug]], [[sources/slug]] — only slugs from the schema or from new_concepts/new_entities you list here.
 
 {{
   "source_page": {{
     "title": "...",
-    "summary": "2-4 paragraph synthesis",
-    "key_points": ["bullet 1", "bullet 2", ...],
-    "concepts": ["[[concept-slug]] — one-line note on what this source adds", ...],
-    "entities": ["[[entity-slug]] — role description", ...],
-    "connections": ["[[related-page]] — how connected"],
-    "gaps": ["open question 1", ...]
+    "summary": "2-4 paragraph synthesis of this source",
+    "key_points": ["bullet 1", "bullet 2"],
+    "tags": ["tag1", "tag2"],
+    "concepts": ["[[concepts/slug]] — one-line note on what this source adds"],
+    "entities": ["[[entities/slug]] — role in this source"],
+    "connections": ["[[sources/related-slug]] — how connected"],
+    "gaps": ["open question 1"]
   }},
-  "concept_pages": [
-    {{
-      "slug": "new-concept-slug",
-      "title": "Concept Name",
-      "tags": ["tag1", "tag2"],
-      "definition": "1-3 sentence plain-language definition",
-      "how_it_works": "concrete mechanism",
-      "why_it_matters": "practical significance",
-      "nuances": "edge cases, caveats",
-      "evidence": "examples from this source",
-      "connections": ["[[related]]"],
-      "open_questions": ["question 1"]
-    }}
+  "new_concepts": [
+    {{"slug": "concept-slug", "title": "Concept Name", "brief": "one sentence on what to capture"}}
+  ],
+  "new_entities": [
+    {{"slug": "entity-slug", "title": "Entity Name", "entity_type": "person|org|tool|project|database", "brief": "one sentence"}}
   ],
   "update_concepts": [
-    {{
-      "slug": "existing-concept-slug-from-wiki-schema",
-      "add_source_note": "one-line description of what THIS source adds to this concept"
-    }}
-  ],
-  "entity_pages": [
-    {{
-      "slug": "entity-slug",
-      "title": "Entity Name",
-      "entity_type": "person|org|tool|project|database",
-      "tags": ["tag1"],
-      "who_what": "1-2 sentence description",
-      "relevance": "why it matters in this wiki",
-      "contributions": ["key contribution"],
-      "connections": ["[[related]]"]
-    }}
+    {{"slug": "existing-concept-slug", "add_source_note": "what this source contributes to this concept"}}
   ],
   "update_entities": [
-    {{
-      "slug": "existing-entity-slug-from-wiki-schema",
-      "add_source_note": "one-line note on this entity's role in the current source"
-    }}
+    {{"slug": "existing-entity-slug", "add_source_note": "this entity's role in the current source"}}
   ]
+}}
+"""
+
+CONCEPT_PROMPT_TEMPLATE = """\
+STAGE: CONCEPT
+Write a single concept wiki page.
+
+Concept: {title} (slug: {concept_slug})
+Brief: {brief}
+From source: {source_title}
+
+EXISTING WIKI PAGES for [[wikilinks]]:
+{wiki_schema}
+
+TAG VOCABULARY:
+{tag_vocabulary}
+
+Source excerpt (for evidence and examples):
+---
+{text}
+---
+
+Produce a JSON object for this one concept page. Fill all fields substantively.
+Connections: link to related slugs from the wiki schema only.
+
+{{
+  "slug": "{concept_slug}",
+  "title": "...",
+  "tags": ["tag1"],
+  "definition": "1-3 sentence plain-language definition",
+  "how_it_works": "concrete mechanism, can be multiple sentences",
+  "why_it_matters": "practical significance",
+  "nuances": "edge cases, caveats, common misconceptions",
+  "evidence": "specific examples and findings from this source",
+  "connections": ["[[concepts/related-slug]] — how connected"],
+  "open_questions": ["question 1"]
+}}
+"""
+
+ENTITY_PROMPT_TEMPLATE = """\
+STAGE: ENTITY
+Write a single entity wiki page.
+
+Entity: {title} (slug: {entity_slug}, type: {entity_type})
+Brief: {brief}
+From source: {source_title}
+
+EXISTING WIKI PAGES for [[wikilinks]]:
+{wiki_schema}
+
+TAG VOCABULARY:
+{tag_vocabulary}
+
+Source excerpt:
+---
+{text}
+---
+
+Produce a JSON object for this one entity page.
+
+{{
+  "slug": "{entity_slug}",
+  "title": "...",
+  "entity_type": "{entity_type}",
+  "tags": ["tag1"],
+  "who_what": "1-2 sentence description",
+  "relevance": "why this entity matters in this wiki's context",
+  "contributions": ["key contribution or feature 1"],
+  "connections": ["[[concepts/related-slug]] — connection type"]
 }}
 """
 
@@ -391,7 +435,8 @@ def update_index(wiki_path: Path, slug: str, page_type: str, title: str, summary
 
     _DIR = {"source": "sources", "concept": "concepts", "entity": "entities"}
     dir_name = _DIR.get(page_type, f"{page_type}s")
-    entry_anchor = f"[[{dir_name}/{slug}|{slug}]]"
+    # No pipe alias inside table cells — Obsidian treats | as column separator
+    entry_anchor = f"[[{dir_name}/{slug}]]"
 
     if entry_anchor in content:
         _refresh_index_stats(index_path)
@@ -453,6 +498,8 @@ def lint_wiki(wiki_path: Path) -> dict:
     for md in wiki_path.rglob("*.md"):
         if md.name in _SYSTEM_FILES:
             continue
+        if md.parent.name == "raw" or "raw" in md.parts:
+            continue  # raw/ files are source archives, not wiki pages
         all_files.append(md)
         all_slugs.add(md.stem)
 

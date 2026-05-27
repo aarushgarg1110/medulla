@@ -1,6 +1,7 @@
 """Medulla CLI — three-layer memory for Claude Code and Kiro."""
 from __future__ import annotations
 
+import subprocess
 from typing import Annotated, Optional
 import typer
 from rich.console import Console
@@ -195,16 +196,63 @@ def mcp():
 @app.command()
 def use(
     provider: Annotated[str, typer.Argument(help="bedrock | anthropic | ollama")],
+    model: Annotated[Optional[str], typer.Option("--model", "-m", help="Model name override")] = None,
 ):
     """Switch the active LLM provider."""
+    import os, subprocess
     valid = {"bedrock", "anthropic", "ollama"}
     if provider not in valid:
         console.print(f"[red]Unknown provider: {provider}. Choose: {', '.join(sorted(valid))}[/red]")
         raise typer.Exit(1)
-    from medulla.config import set_active_provider
+
+    from medulla.config import set_active_provider, get_config, save_config
+
+    if provider == "anthropic":
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            console.print("[yellow]Warning:[/yellow] ANTHROPIC_API_KEY is not set.")
+            console.print("  Add to your shell profile:  [bold]export ANTHROPIC_API_KEY=sk-ant-...[/bold]")
+            console.print("  Medulla will use it at ingest time (never stored in config.toml).")
+
+    if provider == "ollama":
+        # Check server is reachable
+        try:
+            import httpx
+            httpx.get("http://localhost:11434/api/tags", timeout=3.0).raise_for_status()
+        except Exception:
+            console.print("[yellow]Warning:[/yellow] Ollama server not reachable at http://localhost:11434")
+            console.print("  Start it with:  [bold]ollama serve[/bold]")
+            console.print("  Install models: [bold]ollama pull llama3.2[/bold]")
+
+        # Show available models if no --model given
+        if not model:
+            try:
+                result = subprocess.run(["ollama", "list"], capture_output=True, text=True, timeout=5)
+                lines = [l for l in result.stdout.strip().splitlines() if l and not l.startswith("NAME")]
+                if lines:
+                    console.print("\n  [bold]Available Ollama models:[/bold]")
+                    for line in lines:
+                        name = line.split()[0]
+                        console.print(f"    {name}")
+                    console.print(f"\n  Using default: [cyan]{get_config().llm.ollama.model}[/cyan]")
+                    console.print("  Override with: [bold]medulla use ollama --model <name>[/bold]")
+            except Exception:
+                pass
+
     set_active_provider(provider)
-    console.print(f"[green]✓[/green] Active provider set to [bold]{provider}[/bold]")
-    console.print("  Run [bold]medulla status[/bold] to verify connectivity.")
+
+    if model:
+        cfg = get_config()
+        if provider == "ollama":
+            cfg.llm.ollama.model = model
+        elif provider == "anthropic":
+            cfg.llm.anthropic.model = model
+        elif provider == "bedrock":
+            cfg.llm.bedrock.model = model
+        save_config(cfg)
+        console.print(f"[green]✓[/green] Provider: [bold]{provider}[/bold]  Model: [bold]{model}[/bold]")
+    else:
+        console.print(f"[green]✓[/green] Active provider set to [bold]{provider}[/bold]")
+    console.print("  Run [bold]medulla status[/bold] to verify.")
 
 
 # ── status ─────────────────────────────────────────────────────────────────────
@@ -391,7 +439,6 @@ def wiki_list(
 @wiki_app.command(name="open")
 def wiki_open():
     """Open the wiki vault in Obsidian."""
-    import subprocess
     from medulla.config import get_config
     wiki = get_config().wiki_path
     if not wiki.exists():

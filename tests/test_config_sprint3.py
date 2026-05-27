@@ -4,9 +4,11 @@ from pathlib import Path
 
 
 @pytest.fixture(autouse=True)
-def reset_config():
+def reset_config(tmp_path, monkeypatch):
     import medulla.config as cfg
     cfg._config = None
+    # Isolate from real ~/.medulla/config.toml
+    monkeypatch.setenv("MEDULLA_DIR", str(tmp_path / ".medulla"))
     yield
     cfg._config = None
 

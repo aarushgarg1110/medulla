@@ -11,27 +11,22 @@ from medulla.semantic.ingest import (
 
 
 class MockProvider:
-    """Test double implementing LLMProvider — returns realistic structured output."""
+    """Test double implementing LLMProvider — returns realistic structured output.
+
+    Detects the stage from prompt content (STAGE: PLAN / CONCEPT / ENTITY) and
+    returns the correct shaped JSON for each stage of the multi-call pipeline.
+    """
     @property
     def name(self): return "mock"
     @property
     def model(self): return "mock-model"
 
     def generate(self, prompt: str, system: str | None = None, on_token=None) -> str:
-        return json.dumps({
-            "source_page": {
-                "title": "LogD Prediction Study",
-                "summary": "A study on logD prediction using chromatographic methods.",
-                "key_points": ["LogD measured at pH 7.4", "Batch effects observed"],
-                "concepts": ["[[logd-prediction]] — core concept"],
-                "entities": ["[[syngene]] — CRO performing measurements"],
-                "connections": [],
-                "gaps": ["Root cause unclear"],
-            },
-            "concept_pages": [{
+        if "STAGE: CONCEPT" in prompt:
+            return json.dumps({
                 "slug": "logd-prediction",
                 "title": "LogD Prediction",
-                "tags": ["admet", "logd"],
+                "tags": ["admet"],
                 "definition": "LogD is the distribution coefficient at pH 7.4.",
                 "how_it_works": "Measured via chromatography.",
                 "why_it_matters": "Key ADMET property.",
@@ -39,8 +34,9 @@ class MockProvider:
                 "evidence": "Salacia series data.",
                 "connections": [],
                 "open_questions": ["Why batch effect?"],
-            }],
-            "entity_pages": [{
+            })
+        if "STAGE: ENTITY" in prompt:
+            return json.dumps({
                 "slug": "syngene",
                 "title": "Syngene",
                 "entity_type": "org",
@@ -49,7 +45,23 @@ class MockProvider:
                 "relevance": "Performed logD measurements.",
                 "contributions": ["Chromatographic logD assay"],
                 "connections": [],
-            }],
+            })
+        # STAGE: PLAN (default)
+        return json.dumps({
+            "source_page": {
+                "title": "LogD Prediction Study",
+                "summary": "A study on logD prediction using chromatographic methods.",
+                "key_points": ["LogD measured at pH 7.4", "Batch effects observed"],
+                "tags": ["admet"],
+                "concepts": ["[[concepts/logd-prediction]] — core concept"],
+                "entities": ["[[entities/syngene]] — CRO performing measurements"],
+                "connections": [],
+                "gaps": ["Root cause unclear"],
+            },
+            "new_concepts": [{"slug": "logd-prediction", "title": "LogD Prediction", "brief": "Distribution coefficient at pH 7.4"}],
+            "new_entities": [{"slug": "syngene", "title": "Syngene", "entity_type": "org", "brief": "CRO for measurements"}],
+            "update_concepts": [],
+            "update_entities": [],
         })
 
 
@@ -149,7 +161,8 @@ def test_process_pending_creates_wiki_pages(db, tmp_path, mock_provider):
     results = process_pending(wiki, db, mock_provider)
     assert len(results) == 1
     assert results[0]["total_pages"] == 3  # source + concept + entity
-    assert (wiki / "sources" / "logd-study.md").exists()
+    # Slug comes from LLM-chosen title "LogD Prediction Study", not filename
+    assert (wiki / "sources" / "logd-prediction-study.md").exists()
     assert (wiki / "concepts" / "logd-prediction.md").exists()
     assert (wiki / "entities" / "syngene.md").exists()
 
@@ -192,7 +205,7 @@ def test_process_pending_updates_index(db, tmp_path, mock_provider):
     intake_to_raw(db, wiki, str(md))
     process_pending(wiki, db, mock_provider)
     assert (wiki / "index.md").exists()
-    assert "logd-study" in (wiki / "index.md").read_text()
+    assert "logd-prediction-study" in (wiki / "index.md").read_text()
 
 
 def test_process_pending_empty(db, tmp_path, mock_provider):
@@ -248,10 +261,10 @@ def test_update_concepts_adds_source(db, tmp_path, mock_provider):
         def generate(self, prompt, system=None, on_token=None):
             return json.dumps({
                 "source_page": {"title": "Paper Two", "summary": "Summary.", "key_points": [],
-                                "concepts": [], "entities": [], "connections": [], "gaps": []},
-                "concept_pages": [],
+                                "tags": [], "concepts": [], "entities": [], "connections": [], "gaps": []},
+                "new_concepts": [],
+                "new_entities": [],
                 "update_concepts": [{"slug": "multi-head-attention", "add_source_note": "Paper Two also uses MHA"}],
-                "entity_pages": [],
                 "update_entities": [],
             })
 
@@ -333,10 +346,10 @@ def test_update_entities_via_pipeline(db, tmp_path):
         def generate(self, prompt, system=None, on_token=None):
             return json.dumps({
                 "source_page": {"title": "Paper", "summary": "S.", "key_points": [],
-                                "concepts": [], "entities": [], "connections": [], "gaps": []},
-                "concept_pages": [],
+                                "tags": [], "concepts": [], "entities": [], "connections": [], "gaps": []},
+                "new_concepts": [],
+                "new_entities": [],
                 "update_concepts": [],
-                "entity_pages": [],
                 "update_entities": [{"slug": "andrej-karpathy", "add_source_note": "Also author here"}],
             })
 
