@@ -201,3 +201,51 @@ def test_mark_pending_error(db):
     row = db.execute("SELECT * FROM pending_ingests WHERE id=?", (pid,)).fetchone()
     assert row["status"] == "error"
     assert "LLM unavailable" in row["error"]
+
+
+def test_queue_pending_url_dedup(db):
+    """URL as dedup key: same URL queued twice → one row."""
+    url = "https://karpathy.github.io/2026/02/12/microgpt/"
+    id1 = queue_pending(db, url, "url", processing_path="/tmp/microgpt_abc.md")
+    mark_pending_done(db, id1)
+    id2 = queue_pending(db, url, "url", processing_path="/tmp/microgpt_xyz.md")
+    # URL key → treated as already processed, not re-queued
+    assert get_pending_count(db) == 0
+    assert id1 == id2
+
+
+def test_queue_pending_url_force(db):
+    """URL dedup key with force=True re-queues."""
+    url = "https://example.com/paper"
+    pid = queue_pending(db, url, "url", processing_path="/tmp/paper.md")
+    mark_pending_done(db, pid)
+    queue_pending(db, url, "url", processing_path="/tmp/paper2.md", force=True)
+    assert get_pending_count(db) == 1
+
+
+def test_queue_pending_sha256_dedup(db, tmp_path):
+    """sha256 dedup key: same content under different filenames → one row."""
+    f1 = tmp_path / "adam.pdf"
+    f1.write_bytes(b"pdf content")
+    import hashlib
+    h = hashlib.sha256(b"pdf content").hexdigest()
+    key = f"sha256:{h}"
+    pid = queue_pending(db, key, "pdf", processing_path=str(f1))
+    mark_pending_done(db, pid)
+    # Same content, different filename
+    f2 = tmp_path / "adam-optimizer-2015.pdf"
+    f2.write_bytes(b"pdf content")
+    id2 = queue_pending(db, key, "pdf", processing_path=str(f2))
+    assert get_pending_count(db) == 0
+    assert pid == id2
+
+
+def test_queue_pending_processing_path_stored(db, tmp_path):
+    """processing_path is stored separately from the dedup key."""
+    url = "https://example.com/doc"
+    tmp = tmp_path / "doc.md"
+    tmp.write_text("content")
+    queue_pending(db, url, "url", processing_path=str(tmp))
+    row = db.execute("SELECT * FROM pending_ingests WHERE source_path=?", (url,)).fetchone()
+    assert row["source_path"] == url
+    assert row["processing_path"] == str(tmp)

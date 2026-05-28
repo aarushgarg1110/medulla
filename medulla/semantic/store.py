@@ -96,15 +96,30 @@ def get_wiki_stats(conn: sqlite3.Connection) -> dict:
 
 # ── Pending ingest queue ───────────────────────────────────────────────────────
 
-def queue_pending(conn: sqlite3.Connection, source_path: str, source_type: str, title: str | None = None, force: bool = False) -> int:
-    """Add source to pending queue. Idempotent:
+def queue_pending(
+    conn: sqlite3.Connection,
+    source_path: str,
+    source_type: str,
+    title: str | None = None,
+    force: bool = False,
+    processing_path: str | None = None,
+) -> int:
+    """Add source to pending queue. Idempotent.
+
+    source_path: dedup key — URL string or 'sha256:<hash>' for binary files.
+    processing_path: actual file path passed to the LLM pipeline (temp file for
+                     URLs, raw/ path for binaries). Falls back to source_path if None.
+
+    States:
     - already queued → no-op
     - previously errored → reset to queued (retry)
-    - already done + file exists → skip (already processed)
-    - already done + file missing → re-queue (file was deleted/re-added)
-    - force=True → always re-queue regardless
+    - already done + dedup key is a file that still exists → skip
+    - already done + dedup key is URL or missing file → re-queue
+    - force=True → always re-queue
     """
     import os
+    effective_path = processing_path or source_path
+
     existing = conn.execute(
         "SELECT id, status FROM pending_ingests WHERE source_path = ? ORDER BY id DESC LIMIT 1",
         (source_path,)
@@ -112,23 +127,25 @@ def queue_pending(conn: sqlite3.Connection, source_path: str, source_type: str, 
 
     if existing:
         if existing["status"] == "queued":
-            return existing["id"]  # already pending, skip
+            return existing["id"]
         if existing["status"] == "done" and not force:
-            if os.path.exists(source_path):
-                return existing["id"]  # done and file intact — skip
-            # file was deleted and re-added — re-queue automatically
-        # status == "error", or done+file missing, or force → reset to queued
+            # For URL/hash keys, treat as already processed
+            is_file_key = not source_path.startswith("http") and not source_path.startswith("sha256:")
+            if not is_file_key or os.path.exists(effective_path):
+                return existing["id"]
+        # error, done+missing, or force → reset
         conn.execute(
-            "UPDATE pending_ingests SET status='queued', error=NULL, queued_at=datetime('now') WHERE id=?",
-            (existing["id"],)
+            "UPDATE pending_ingests SET status='queued', error=NULL, queued_at=datetime('now'), "
+            "processing_path=? WHERE id=?",
+            (effective_path, existing["id"])
         )
         conn.commit()
         return existing["id"]
 
     cur = conn.execute("""
-        INSERT INTO pending_ingests (source_path, source_type, title, status, queued_at)
-        VALUES (?, ?, ?, 'queued', datetime('now'))
-    """, (source_path, source_type, title))
+        INSERT INTO pending_ingests (source_path, source_type, title, status, queued_at, processing_path)
+        VALUES (?, ?, ?, 'queued', datetime('now'), ?)
+    """, (source_path, source_type, title, effective_path))
     conn.commit()
     return cur.lastrowid
 

@@ -44,17 +44,15 @@ def intake_to_raw(
     if source.startswith("http://") or source.startswith("https://"):
         from medulla.semantic.sources.url import extract
         from medulla.semantic.wiki import append_url_reference
+        # Dedup key is the URL itself — deterministic regardless of LLM title choice
         fetch_title, text = extract(source)
         final_title = title or fetch_title
         slug = slugify(final_title)
-        # URLs: log to url-references.md only — no markdown file in raw/
-        # raw/ is reserved for actual binary files (.pdf, .docx, etc.)
         append_url_reference(wiki_path, slug, source, title=final_title)
-        # Store extracted text in a temporary path for processing only
         import tempfile
         tmp = Path(tempfile.mktemp(suffix=".md", prefix=f"{slug}_"))
         tmp.write_text(f"---\nurl: {source}\ntitle: {final_title}\nsource_type: url\n---\n\n{text}")
-        queue_pending(conn, str(tmp), "url", final_title, force=force)
+        queue_pending(conn, source, "url", final_title, force=force, processing_path=str(tmp))
         return tmp
 
     src = Path(source)
@@ -64,7 +62,12 @@ def intake_to_raw(
     raw_path = raw_dir / src.name
     shutil.copy2(src, raw_path)
     source_type = src.suffix.lstrip(".").lower() or "text"
-    queue_pending(conn, str(raw_path), source_type, title or src.stem, force=force)
+
+    # For binary files use SHA-256 of content as dedup key — catches same PDF under different filenames
+    import hashlib
+    content_hash = hashlib.sha256(src.read_bytes()).hexdigest()
+    dedup_key = f"sha256:{content_hash}"
+    queue_pending(conn, dedup_key, source_type, title or src.stem, force=force, processing_path=str(raw_path))
     return raw_path
 
 
@@ -114,7 +117,9 @@ def process_pending(
 
     results = []
     for row in get_pending(conn):
-        raw_path = Path(row["source_path"])
+        # processing_path is the actual file; source_path is the dedup key (URL or sha256)
+        processing_path = row["processing_path"] or row["source_path"]
+        raw_path = Path(processing_path)
         if not raw_path.exists():  # pragma: no cover
             mark_pending_error(conn, row["id"], "raw file no longer exists")
             continue
