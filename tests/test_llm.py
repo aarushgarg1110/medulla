@@ -103,7 +103,7 @@ def test_bedrock_provider_generate_streaming(monkeypatch):
             return {"body": MockBody()}
 
     class MockSession:
-        def client(self, service): return MockClient()
+        def client(self, service, **kwargs): return MockClient()
 
     monkeypatch.setattr("boto3.Session", lambda **kw: MockSession())
     provider = BedrockProvider("model", "profile", "us-east-1")
@@ -128,7 +128,7 @@ def test_bedrock_provider_generate(monkeypatch):
             return {"body": MockBody()}
 
     class MockSession:
-        def client(self, service): return MockClient()
+        def client(self, service, **kwargs): return MockClient()
 
     monkeypatch.setattr("boto3.Session", lambda **kw: MockSession())
     provider = BedrockProvider("anthropic.claude-haiku", "profile", "us-east-1")

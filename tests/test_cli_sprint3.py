@@ -258,3 +258,33 @@ def test_wiki_lint_clean(tmp_path, monkeypatch):
     result = runner.invoke(app, ["wiki", "lint"])
     assert result.exit_code == 0
     assert "2 pages" in result.output or "pages" in result.output
+
+
+def test_ingest_streaming_flag_shows_warning(tmp_path, monkeypatch):
+    """--streaming flag shows 4096 token cap warning."""
+    from tests.test_ingest_pipeline import MockProvider
+    monkeypatch.setattr("medulla.llm.get_provider", MockProvider)
+    import medulla.config as cfg
+    wiki = cfg.get_config().wiki_path
+    wiki.mkdir(parents=True)
+    (wiki / "raw").mkdir()
+    md = wiki / "raw" / "study.md"
+    md.write_text("# LogD Study\n\nContent.")
+    result = runner.invoke(app, ["ingest", "--streaming"])
+    assert result.exit_code == 0
+    assert "4096" in result.output or "Streaming" in result.output or "streaming" in result.output.lower()
+
+
+def test_ingest_default_no_streaming(tmp_path, monkeypatch):
+    """Default ingest (no --streaming) does not show streaming warning."""
+    from tests.test_ingest_pipeline import MockProvider
+    monkeypatch.setattr("medulla.llm.get_provider", MockProvider)
+    import medulla.config as cfg
+    wiki = cfg.get_config().wiki_path
+    wiki.mkdir(parents=True)
+    (wiki / "raw").mkdir()
+    md = wiki / "raw" / "study.md"
+    md.write_text("# LogD Study\n\nContent.")
+    result = runner.invoke(app, ["ingest"])
+    assert result.exit_code == 0
+    assert "4096" not in result.output

@@ -46,17 +46,21 @@ class BedrockProvider(LLMProvider):
 
     def generate(self, prompt: str, system: str | None = None, on_token=None) -> str:
         import boto3
+        from botocore.config import Config
         session = boto3.Session(profile_name=self._profile, region_name=self._region)
-        client = session.client("bedrock-runtime")
-        body: dict = {
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 4096,
-            "anthropic_version": "bedrock-2023-05-31",
-        }
-        if system:
-            body["system"] = system
+        # 300s read timeout — non-streaming waits for complete response in one shot;
+        # without this boto3's 60s default cuts off long generations mid-response
+        client = session.client("bedrock-runtime", config=Config(read_timeout=300))
 
         if on_token is not None:
+            # Streaming — capped at 4096 output tokens by cross-region inference profile
+            body: dict = {
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 4096,
+                "anthropic_version": "bedrock-2023-05-31",
+            }
+            if system:
+                body["system"] = system
             resp = client.invoke_model_with_response_stream(
                 modelId=self._model, body=json.dumps(body)
             )
@@ -70,6 +74,14 @@ class BedrockProvider(LLMProvider):
                         on_token(text)
             return "".join(parts)
 
+        # Non-streaming — 32K output tokens, handles large plan/concept responses
+        body = {
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 32768,
+            "anthropic_version": "bedrock-2023-05-31",
+        }
+        if system:
+            body["system"] = system
         resp = client.invoke_model(modelId=self._model, body=json.dumps(body))
         result = json.loads(resp["body"].read())
         return result["content"][0]["text"]

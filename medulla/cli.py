@@ -330,12 +330,14 @@ def ingest(
     title: Annotated[Optional[str], typer.Option("--title", "-t")] = None,
     scope: Annotated[str, typer.Option("--scope")] = "personal",
     force: Annotated[bool, typer.Option("--force", "-f", help="Re-ingest even if already processed")] = False,
+    streaming: Annotated[bool, typer.Option("--streaming", help="Stream raw tokens (limits output to 4096 tokens — use for small sources or debugging only)")] = False,
 ):
     """Ingest sources into the semantic wiki via raw/.
 
     No args: discover new files in raw/ + process all queued.
     With path/URL: copy/fetch to raw/ then process immediately.
     --force: re-ingest even if this source was previously processed.
+    --streaming: show raw LLM tokens as they arrive (caps output at 4096 tokens).
     """
     from pathlib import Path
     from medulla.db.database import connect
@@ -392,12 +394,18 @@ def ingest(
 
     console.print(f"Processing {n} queued file(s)...\n")
 
-    def _stream_token(text: str) -> None:
-        """Print LLM tokens as they arrive so the CLI doesn't look hung."""
-        print(text, end="", flush=True)
+    on_token = None
+    if streaming:
+        console.print(
+            "[yellow]⚠ Streaming mode:[/yellow] output capped at 4096 tokens per call. "
+            "Use for small sources or debugging only.\n"
+        )
+        def on_token(text: str) -> None:
+            print(text, end="", flush=True)
 
-    results = process_pending(wiki_path, conn, provider_result, scope=scope, on_token=_stream_token)
-    print()  # newline after streaming output
+    results = process_pending(wiki_path, conn, provider_result, scope=scope, on_token=on_token)
+    if streaming:
+        print()  # newline after streamed output
     for r in results:
         name = Path(r["source_path"]).name
         if "error" in r:
