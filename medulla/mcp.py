@@ -166,7 +166,15 @@ _TOOLS = [
             "The 3-concept/2-entity cap applies ONLY to CLI ingest (Bedrock token limits). MCP has NO limit. "
             "ALWAYS pass source_path when you read a local file (PDF, markdown) — the file gets copied to wiki/raw/ as an immutable archive. "
             "ALWAYS pass source_url when you fetched via WebFetch — the URL gets logged to url-references.md. "
-            "Both can be provided for a PDF downloaded from a URL."
+            "Both can be provided for a PDF downloaded from a URL.\n\n"
+            "WIKILINK PATH CONVENTION — this is critical for Obsidian graph correctness:\n"
+            "- Concepts: [[concepts/slug]] e.g. [[concepts/adam-optimizer]]\n"
+            "- Entities: [[entities/slug]] e.g. [[entities/andrej-karpathy]]\n"
+            "- Sources: [[sources/slug]] e.g. [[sources/microgpt-karpathy-2026]]\n"
+            "NEVER use bare [[slug]] — always include the folder prefix. "
+            "medulla_wiki_schema returns slugs in this exact format — copy them verbatim. "
+            "When the schema is empty (first ingest), plan ALL slugs for this session upfront, "
+            "then write every wikilink as [[concepts/slug]] or [[entities/slug]] consistently throughout."
         ),
         inputSchema={
             "type": "object",
@@ -205,7 +213,11 @@ _TOOLS = [
             "CALL THIS FIRST before calling medulla_ingest for any source. "
             "Use the returned slugs to write accurate [[wikilinks]] — only link to slugs that exist "
             "or that you are about to create in this ingest session. "
-            "Linking to non-existent slugs fragments the Obsidian graph."
+            "Linking to non-existent slugs fragments the Obsidian graph.\n\n"
+            "WIKILINK FORMAT: slugs are returned as [[concepts/slug]], [[entities/slug]], [[sources/slug]]. "
+            "Always include the folder prefix in wikilinks — never use bare [[slug]]. "
+            "When this returns empty (fresh wiki), you must still use the folder-prefixed format "
+            "for all pages you create: [[concepts/your-slug]], [[entities/your-slug]], [[sources/your-slug]]."
         ),
         inputSchema={"type": "object", "properties": {}},
     ),
