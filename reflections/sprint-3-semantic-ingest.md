@@ -2,8 +2,8 @@
 
 **Branch:** `feat/sprint-3-semantic-ingest`  
 **PR:** #10  
-**Date:** 2026-05-27  
-**Tests:** 395 passing · 95% statement+branch coverage
+**Date:** 2026-05-27 → 2026-05-28  
+**Tests:** 424 passing · 96% statement coverage
 
 ---
 
@@ -91,6 +91,45 @@ LLM was inventing new tags on every ingest (e.g., `ml-research`, `machine-learni
 **`raw/` policy:** Binary files only in `raw/`. URLs in `url-references.md`. Keeps `raw/` as a clean, importable archive — not a collection of near-empty stubs.
 
 **MCP = pure storage:** When called from Claude Code, Claude IS the LLM. `medulla_ingest` stores Claude's synthesis directly. `medulla_ingest_url` is only for clients without WebFetch. This avoids paying twice for synthesis.
+
+**Non-streaming by default:** After switching to non-streaming (`invoke_model`) with 32K max_tokens and 300s boto3 read timeout, plan stage truncation is eliminated. `--streaming` flag is opt-in with a warning. The boto3 read timeout was necessary because non-streaming waits for the complete response in one shot — without it, the 60s default kills long generations before they arrive.
+
+**Forward references vs session-only wikilinks:** Concept pages reference only existing wiki pages + session slugs. This prevents broken links while still capturing cross-session relationships. When a later source creates `self-attention.md`, the connection happens then. Forward refs to unknown slugs are silently suppressed by the "session slug only" rule, surfaced by wikilink validation if any slip through.
+
+**URL/hash dedup:** URLs use the URL string as the dedup key; binary files use `sha256:hash`. Separates the dedup key from the temp processing path, preventing the same source from being re-ingested under a different filename or temp path. `--force` overrides for deliberate re-ingestion.
+
+---
+
+## Post-Sprint Fixes (2026-05-28)
+
+These were discovered during manual testing after the initial implementation and fixed before merge.
+
+### Non-streaming default + 32K max_tokens
+Switched CLI ingest to `invoke_model` (non-streaming) with `max_tokens=32768` and `read_timeout=300`. The streaming cap (4096 tokens) was causing plan-stage truncation on large sources like the microGPT post (93KB, 13 concepts). `--streaming` flag added for debugging.
+
+### YAML title quoting
+Titles containing `:` (e.g. `"Adam: A Method..."`) broke Obsidian's frontmatter parser, showing raw YAML instead of Properties panel. `_yaml_title()` wraps affected titles in double quotes.
+
+### URL/hash-based dedup
+Random temp file paths caused the same URL to re-ingest on every call. URLs now use the URL string as the dedup key; binary files use `sha256:hash` of content. `processing_path` column (V3 migration) stores the actual file path separately.
+
+### `store_wiki_page` slug= param
+MCP ingests could produce slugs like `ma-rae-macro-averaged-relative-absolute-error` when the intended wikilink was `[[concepts/ma-rae]]`. Added `slug=` param to decouple title from slug. MCP tool description updated with slug consistency rules.
+
+### Wikilink validation
+`_check_wikilinks()` scans written pages for broken `[[folder/slug]]` references. CLI prints warnings at end of pipeline; MCP appends to `medulla_ingest` return value so Claude sees broken links immediately.
+
+### Plan slug consistency enforcement
+`_filter_wikilinks()` strips source page concept/entity entries whose slugs don't match `new_concepts`/`new_entities` — prevents the source page from referencing `[[concepts/adam-optimizer]]` when the plan created `gpt-pretraining` instead.
+
+### Session slug injection into concept/entity calls
+Concept and entity calls now receive `{session_schema}` — all slugs being created this session. Prevents drift where `kv-cache.md` writes `[[concepts/autograd]]` when the planned slug was `autograd-engine`. After this fix: `medulla wiki lint` shows no broken links on a full two-source ingest.
+
+### Python 3.12 pin + Ollama UX
+`requires-python = ">=3.12,<3.14"` — Python 3.14 rejects Zscaler corporate CA certs. `medulla use ollama` now checks server reachability and lists downloaded models.
+
+### MCP wikilink path convention
+`medulla_ingest` and `medulla_wiki_schema` descriptions updated with explicit `[[concepts/slug]]` format requirement. Fixes cases where Claude used bare `[[slug]]` producing unresolved Obsidian links.
 
 ---
 
