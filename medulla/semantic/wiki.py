@@ -200,6 +200,9 @@ From source: {source_title}
 EXISTING WIKI PAGES for [[wikilinks]]:
 {wiki_schema}
 
+SESSION SLUGS — also valid wikilink targets (being created in this same ingest session):
+{session_schema}
+
 TAG VOCABULARY:
 {tag_vocabulary}
 
@@ -209,7 +212,7 @@ Source excerpt (for evidence and examples):
 ---
 
 Produce a JSON object for this one concept page. Fill all fields substantively.
-Connections: link to related slugs from the wiki schema only.
+Connections: ONLY use slugs from EXISTING WIKI PAGES or SESSION SLUGS above. No other slugs.
 
 {{
   "slug": "{concept_slug}",
@@ -236,6 +239,9 @@ From source: {source_title}
 EXISTING WIKI PAGES for [[wikilinks]]:
 {wiki_schema}
 
+SESSION SLUGS — also valid wikilink targets (being created in this same ingest session):
+{session_schema}
+
 TAG VOCABULARY:
 {tag_vocabulary}
 
@@ -243,6 +249,8 @@ Source excerpt:
 ---
 {text}
 ---
+
+Connections: ONLY use slugs from EXISTING WIKI PAGES or SESSION SLUGS above. No other slugs.
 
 Produce a JSON object for this one entity page.
 

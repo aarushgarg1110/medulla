@@ -344,6 +344,15 @@ def _run_llm_pipeline(
     # Rebuild schema after adding source page so concepts can wikilink it
     schema = _build_wiki_schema(wiki_path)
 
+    # Session slugs: all concepts + entities being created this ingest — valid wikilink targets
+    # even before their pages are written. Prevents drift (autograd vs autograd-engine).
+    session_concept_slugs = [_clean_slug(nc.get("slug", "")) for nc in new_concepts if nc.get("slug")]
+    session_entity_slugs = [_clean_slug(ne.get("slug", "")) for ne in new_entities if ne.get("slug")]
+    session_schema = "\n".join(
+        [f"[[concepts/{s}]]" for s in session_concept_slugs if s] +
+        [f"[[entities/{s}]]" for s in session_entity_slugs if s]
+    ) or "None — this is the only page being created this session."
+
     # ── Stage 2: per-concept calls ────────────────────────────────────────────
     concept_slugs = []
     for i, nc in enumerate(new_concepts, 1):
@@ -354,6 +363,7 @@ def _run_llm_pipeline(
             brief=nc.get("brief", ""),
             source_title=title,
             wiki_schema=schema,
+            session_schema=session_schema,
             tag_vocabulary=tag_vocab,
             text=truncated_text[:8_000],
         )
@@ -384,6 +394,7 @@ def _run_llm_pipeline(
             brief=ne.get("brief", ""),
             source_title=title,
             wiki_schema=schema,
+            session_schema=session_schema,
             tag_vocabulary=tag_vocab,
             text=truncated_text[:8_000],
         )
