@@ -70,7 +70,22 @@ def parse_session(path: Path) -> ParsedSession | None:
         return None
 
     slug = path.stem
+    if _is_kiro_format(text):
+        return _parse_kiro(path, slug, text)
     return _parse_claude(path, slug, text)
+
+
+def _is_kiro_format(body: str) -> bool:
+    """Detect Kiro JSONL format by checking first non-empty line."""
+    for line in body.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        node = _read_json(line)
+        if node and node.get("version") == "v1" and "kind" in node:
+            return True
+        return False  # first parseable line is not Kiro
+    return False
 
 
 def parse_agent_session(path: Path) -> ParsedAgentSession | None:
@@ -262,6 +277,102 @@ def _parse_agent_claude(path: Path, body: str) -> ParsedAgentSession | None:
         message_count=message_count,
         first_seen_at=first_seen_at,
         last_updated_at=last_updated_at,
+    )
+
+
+# ── Kiro format ───────────────────────────────────────────────────────────────
+
+def _parse_kiro(path: Path, slug: str, body: str) -> ParsedSession | None:
+    """Parse Kiro CLI session JSONL.
+
+    Format per line:
+      kind: "Prompt"          → user message (data.content[].kind=="text")
+      kind: "AssistantMessage" → assistant response + tool calls
+      kind: "ToolResults"     → tool outputs (skipped)
+    """
+    from datetime import datetime, timezone
+
+    session_id = path.stem
+    started_at: str | None = None
+    ended_at: str | None = None
+    turn_count = 0
+    tool_call_count = 0
+    tool_names: set[str] = set()
+    first_message: str | None = None
+    messages: list[str] = []
+    has_user_message = False
+
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        node = _read_json(line)
+        if node is None or node.get("version") != "v1":
+            continue
+
+        kind = node.get("kind", "")
+        data = node.get("data", {})
+
+        # Timestamp
+        ts_unix = data.get("meta", {}).get("timestamp")
+        if ts_unix:
+            ts = datetime.fromtimestamp(ts_unix, tz=timezone.utc).isoformat()
+            if started_at is None:
+                started_at = ts
+            ended_at = ts
+
+        content = data.get("content", [])
+
+        if kind == "Prompt":
+            # User message
+            text_parts = [
+                c["data"] for c in content
+                if isinstance(c, dict) and c.get("kind") == "text" and c.get("data")
+            ]
+            text = " ".join(text_parts).strip()
+            if text:
+                if first_message is None:
+                    first_message = text[:MAX_FIRST_MSG]
+                messages.append(text)
+                has_user_message = True
+
+        elif kind == "AssistantMessage":
+            turn_count += 1
+            # Extract text blocks
+            text_parts = [
+                c["data"] for c in content
+                if isinstance(c, dict) and c.get("kind") == "text" and c.get("data")
+            ]
+            text = " ".join(text_parts).strip()
+            if text:
+                messages.append(text)
+            # Extract tool calls
+            for c in content:
+                if isinstance(c, dict) and c.get("kind") == "toolUse":
+                    tool_call_count += 1
+                    name = c.get("data", {}).get("name", "")
+                    if name:
+                        tool_names.add(name)
+
+    if not has_user_message:
+        return None
+
+    return ParsedSession(
+        session_id=session_id,
+        source="kiro",
+        project_dir=None,   # Kiro CLI sessions don't expose cwd
+        git_branch=None,
+        slug=slug,
+        model=None,
+        started_at=started_at,
+        ended_at=ended_at,
+        turn_count=turn_count,
+        tool_call_count=tool_call_count,
+        tool_names=sorted(tool_names),
+        files=[],
+        first_message=first_message,
+        all_user_text=" ".join(messages),
+        messages=messages,
     )
 
 

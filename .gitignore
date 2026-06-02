@@ -20,3 +20,4 @@ htmlcov/
 
 # uv / python version pin
 .python-version
+sanity-output/
