@@ -175,6 +175,27 @@ def _extract_frontmatter_url(content: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
+def _check_wikilinks(wiki_path: Path, pages: list[Path]) -> list[str]:
+    """Return broken [[folder/slug]] wikilinks found in the given pages.
+
+    Only checks links that use the folder-prefixed format (concepts/X, entities/X,
+    sources/X). Bare [[slug]] links are ignored.
+    """
+    import re
+    pattern = re.compile(r"\[\[(concepts|entities|sources)/([^\]|]+)\]\]")
+    broken = []
+    for page in pages:
+        if not page.exists():
+            continue
+        content = page.read_text(errors="replace")
+        for m in pattern.finditer(content):
+            folder, slug = m.group(1), m.group(2).strip()
+            target = wiki_path / folder / f"{slug}.md"
+            if not target.exists():
+                broken.append(f"[[{folder}/{slug}]] (referenced in {page.name})")
+    return broken
+
+
 # ── Core LLM pipeline ─────────────────────────────────────────────────────────
 
 def _extract_summary(content: str) -> str:
@@ -285,6 +306,28 @@ def _run_llm_pipeline(
     n_entities = len(new_entities)
     n_updates = len(plan.get("update_concepts", [])) + len(plan.get("update_entities", []))
 
+    # Enforce consistency: rebuild source_page concept/entity wikilinks from the
+    # plan slugs so they can never drift from what will actually be created.
+    planned_concept_slugs = {_clean_slug(nc.get("slug", "")) for nc in new_concepts}
+    planned_concept_slugs |= {_clean_slug(uc.get("slug", "")) for uc in plan.get("update_concepts", [])}
+    planned_entity_slugs = {_clean_slug(ne.get("slug", "")) for ne in new_entities}
+    planned_entity_slugs |= {_clean_slug(ue.get("slug", "")) for ue in plan.get("update_entities", [])}
+
+    def _filter_wikilinks(entries: list, folder: str, valid_slugs: set) -> list:
+        """Keep only entries whose [[folder/slug]] matches the plan."""
+        import re
+        out = []
+        for entry in entries:
+            m = re.search(r"\[\[" + folder + r"/([^\]|]+)\]\]", entry)
+            if m and _clean_slug(m.group(1)) in valid_slugs:
+                out.append(entry)
+        return out
+
+    source_data["concepts"] = _filter_wikilinks(
+        source_data.get("concepts", []), "concepts", planned_concept_slugs)
+    source_data["entities"] = _filter_wikilinks(
+        source_data.get("entities", []), "entities", planned_entity_slugs)
+
     print(f"  ✓ Source page ready — plan: {n_concepts} concepts, {n_entities} entities"
           + (f", {n_updates} updates" if n_updates else ""))
 
@@ -389,12 +432,25 @@ def _run_llm_pipeline(
                f"Source: {source_slug}\nConcepts: {', '.join(concept_slugs)}"
                f"\nEntities: {', '.join(entity_slugs)}{updated_note}")
 
+    # ── Final wikilink validation ─────────────────────────────────────────────
+    pages_written = (
+        [wiki_path / "sources" / f"{source_slug}.md"]
+        + [wiki_path / "concepts" / f"{s}.md" for s in concept_slugs]
+        + [wiki_path / "entities" / f"{s}.md" for s in entity_slugs]
+    )
+    broken = _check_wikilinks(wiki_path, pages_written)
+    if broken:
+        print(f"\n  ⚠ Broken wikilinks in pages written this session:")
+        for link in broken:
+            print(f"    {link}")
+
     return {
         "source": source_slug,
         "concepts": concept_slugs,
         "entities": entity_slugs,
         "updated": updated_concepts + updated_entities,
         "total_pages": 1 + len(concept_slugs) + len(entity_slugs),
+        "broken_wikilinks": broken,
     }
 
 
@@ -436,10 +492,13 @@ def store_wiki_page(
     source_url: str | None = None,
     source_path: str | None = None,
     scope: str = "personal",
+    slug: str | None = None,
 ) -> dict:
     """Store Claude-synthesized content directly — no LLM call.
 
     Claude IS the LLM when using MCP. This is pure storage.
+    - slug: explicit slug override — use this to decouple the wikilink slug
+      from the title. If omitted, slugify(title) is used.
     - source_url: WebFetch URL → appended to url-references.md log
     - source_path: local file path → file copied to wiki/raw/ for backtrace
     Both can be provided (e.g. PDF downloaded from a URL).
@@ -450,7 +509,7 @@ def store_wiki_page(
     )
     from medulla.semantic.store import upsert_wiki_page
 
-    slug = slugify(title)
+    slug = slug or slugify(title)
     wiki_path.mkdir(parents=True, exist_ok=True)
 
     _DIR = {"source": "sources", "concept": "concepts", "entity": "entities"}
@@ -479,7 +538,8 @@ def store_wiki_page(
     update_index(wiki_path, slug, page_type, title, _extract_summary(content))
     append_log(wiki_path, "ingest", title, "Stored via medulla_ingest MCP tool")
 
-    return {"slug": slug, "type": page_type, "path": str(page_path)}
+    broken = _check_wikilinks(wiki_path, [page_path])
+    return {"slug": slug, "type": page_type, "path": str(page_path), "broken_wikilinks": broken}
 
 
 # ── Legacy helpers (kept for MCP medulla_ingest_url) ──────────────────────────

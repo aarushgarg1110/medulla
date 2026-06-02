@@ -400,12 +400,12 @@ def ingest(
             "[yellow]⚠ Streaming mode:[/yellow] output capped at 4096 tokens per call. "
             "Use for small sources or debugging only.\n"
         )
-        def on_token(text: str) -> None:
+        def on_token(text: str) -> None:  # pragma: no cover
             print(text, end="", flush=True)
 
     results = process_pending(wiki_path, conn, provider_result, scope=scope, on_token=on_token)
     if streaming:
-        print()  # newline after streamed output
+        print()  # pragma: no cover — newline after streamed output
     for r in results:
         name = Path(r["source_path"]).name
         if "error" in r:

@@ -158,7 +158,10 @@ Produce a JSON object with:
 4. update_concepts — existing concept slugs (from wiki schema) that this source adds to
 5. update_entities — existing entity slugs (from wiki schema) that this source adds to
 
-Wikilinks in source_page: use [[concepts/slug]], [[entities/slug]], [[sources/slug]] — only slugs from the schema or from new_concepts/new_entities you list here.
+CRITICAL CONSISTENCY RULE: The slugs in source_page.concepts and source_page.entities MUST exactly match the slugs in new_concepts and new_entities (plus update_concepts/update_entities from the schema).
+No other slugs may appear in source_page.concepts/entities.
+If you plan slug "adam-optimizer" in new_concepts, source_page.concepts must reference [[concepts/adam-optimizer]] — not [[concepts/adam-optimizer-training-loop]] or any variation.
+This is enforced in code — mismatches will be silently corrected to match new_concepts slugs.
 
 {{
   "source_page": {{

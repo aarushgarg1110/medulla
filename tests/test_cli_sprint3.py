@@ -151,16 +151,20 @@ def test_ingest_queues_when_provider_unavailable(tmp_path, monkeypatch):
     assert "queued" in result.output.lower() or "process-pending" in result.output or "provider" in result.output.lower()
 
 
-def test_ingest_with_mock_provider(tmp_path, monkeypatch):
-    """Ingest with a working mock provider creates wiki pages."""
-    import json
+def test_ingest_with_mock_provider(monkeypatch):
+    """Ingest with a working mock provider creates wiki pages and prints success."""
+    import medulla.config as cfg
     from tests.test_ingest_pipeline import MockProvider
     monkeypatch.setattr("medulla.llm.get_provider", MockProvider)
-    md = tmp_path / "study.md"
+    # Put file in raw/ so discover_raw picks it up — avoids sha256 dedup on file path
+    wiki = cfg.get_config().wiki_path
+    wiki.mkdir(parents=True)
+    (wiki / "raw").mkdir(exist_ok=True)
+    md = wiki / "raw" / "logd-study.md"
     md.write_text("# LogD Study\n\nStudy content about logD.")
-    result = runner.invoke(app, ["ingest", str(md)])
+    result = runner.invoke(app, ["ingest"])
     assert result.exit_code == 0
-    assert "Ingested" in result.output or "pages" in result.output.lower()
+    assert "pages" in result.output.lower() or "✓" in result.output
 
 
 def test_ingest_processes_queued_on_no_args(tmp_path, monkeypatch):
@@ -288,3 +292,44 @@ def test_ingest_default_no_streaming(tmp_path, monkeypatch):
     result = runner.invoke(app, ["ingest"])
     assert result.exit_code == 0
     assert "4096" not in result.output
+
+
+def test_ingest_broken_wikilinks_shown(tmp_path, monkeypatch):
+    """Broken wikilinks in written pages are printed as warnings after ingest."""
+    import json
+    import medulla.config as cfg
+
+    class BrokenConnectionProvider:
+        """Plan includes a connection to a non-existent source — not filtered by
+        _filter_wikilinks (which only filters concepts/entities lists), so it
+        ends up in the written source page and triggers the wikilink check."""
+        @property
+        def name(self): return "mock"
+        @property
+        def model(self): return "mock"
+        def generate(self, prompt, system=None, on_token=None):
+            if "STAGE: PLAN" in prompt:
+                return json.dumps({
+                    "source_page": {
+                        "title": "Paper", "summary": "S", "key_points": [], "tags": [],
+                        "concepts": [], "entities": [],
+                        # connection to a source that doesn't exist — passes filter, triggers check
+                        "connections": ["[[sources/nonexistent-related-paper]] — related work"],
+                        "gaps": [],
+                    },
+                    "new_concepts": [],
+                    "new_entities": [],
+                    "update_concepts": [],
+                    "update_entities": [],
+                })
+            return json.dumps({})
+
+    monkeypatch.setattr("medulla.llm.get_provider", BrokenConnectionProvider)
+    wiki = cfg.get_config().wiki_path
+    wiki.mkdir(parents=True)
+    (wiki / "raw").mkdir()
+    md = wiki / "raw" / "study.md"
+    md.write_text("# Study\n\nContent.")
+    result = runner.invoke(app, ["ingest"])
+    assert result.exit_code == 0
+    assert "nonexistent-related-paper" in result.output or "Broken" in result.output

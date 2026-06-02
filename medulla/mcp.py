@@ -161,9 +161,8 @@ _TOOLS = [
             "---\\ntitle: Entity Name\\ntype: person|org|tool|project|database\\n"
             "tags: [tag1]\\nsources: [source-slug]\\n---\\n"
             "## Who / What\\n## Relevance\\n## Key Contributions / Features\\n## Connections\n\n"
-            "Use [[slug]] wikilinks for ALL cross-references (slugs = lowercase-hyphenated). "
             "Be generous with tags — they power the Obsidian graph filter. "
-            "The 3-concept/2-entity cap applies ONLY to CLI ingest (Bedrock token limits). MCP has NO limit. "
+            "No limit on concepts or entities — create as many as are genuinely meaningful. "
             "ALWAYS pass source_path when you read a local file (PDF, markdown) — the file gets copied to wiki/raw/ as an immutable archive. "
             "ALWAYS pass source_url when you fetched via WebFetch — the URL gets logged to url-references.md. "
             "Both can be provided for a PDF downloaded from a URL.\n\n"
@@ -174,12 +173,23 @@ _TOOLS = [
             "NEVER use bare [[slug]] — always include the folder prefix. "
             "medulla_wiki_schema returns slugs in this exact format — copy them verbatim. "
             "When the schema is empty (first ingest), plan ALL slugs for this session upfront, "
-            "then write every wikilink as [[concepts/slug]] or [[entities/slug]] consistently throughout."
+            "then write every wikilink as [[concepts/slug]] or [[entities/slug]] consistently throughout.\n\n"
+            "SLUG CONSISTENCY — wikilinks must resolve to real pages.\n"
+            "The stored slug is: slug param if provided, else slugify(title).\n"
+            "Your wikilinks MUST match the stored slug exactly.\n"
+            "BEST PRACTICE: always pass slug= explicitly to decouple title from slug:\n"
+            "  title='MA-RAE: Macro-Averaged Relative Absolute Error', slug='ma-rae'\n"
+            "  → stored as concepts/ma-rae, wikilink [[concepts/ma-rae]] resolves correctly\n"
+            "WITHOUT slug param: slugify(title) must equal your wikilink slug:\n"
+            "  title='Adam Optimizer' → slug='adam-optimizer' → [[concepts/adam-optimizer]] ✓\n"
+            "  title='MA-RAE: Macro-Averaged...' → slug='ma-rae-macro-averaged-...' → [[concepts/ma-rae]] ✗\n"
+            "WORKFLOW: plan your slugs first, then pass slug= on every concept/entity call."
         ),
         inputSchema={
             "type": "object",
             "properties": {
-                "title": {"type": "string", "description": "Page title"},
+                "title": {"type": "string", "description": "Page title — can be as descriptive as needed. Use slug param to control the wikilink slug explicitly."},
+                "slug": {"type": "string", "description": "Explicit slug override (lowercase-hyphenated, e.g. 'ma-rae'). Use this to decouple the wikilink slug from the title. If omitted, slugify(title) is used. ALWAYS provide slug when your wikilinks use a short slug but the title is long/descriptive."},
                 "content": {"type": "string", "description": "Full markdown content you have synthesized"},
                 "page_type": {"type": "string", "enum": ["source", "concept", "entity"], "default": "source"},
                 "tags": {"type": "array", "items": {"type": "string"}},
@@ -534,6 +544,7 @@ def _tool_ingest(conn, args: dict) -> str:
             tags=args.get("tags", []),
             source_url=args.get("source_url"),
             source_path=args.get("source_path"),
+            slug=args.get("slug") or None,
         )
         extras = []
         if args.get("source_path"):
@@ -541,7 +552,13 @@ def _tool_ingest(conn, args: dict) -> str:
         if args.get("source_url"):
             extras.append("URL logged to url-references.md")
         note = f" ({', '.join(extras)})" if extras else ""
-        return f"Stored: {result['slug']} ({result['type']}){note}"
+        msg = f"Stored: {result['slug']} ({result['type']}){note}"
+        broken = result.get("broken_wikilinks", [])
+        if broken:
+            msg += "\n⚠ Broken wikilinks in this page (these pages don't exist yet):\n"
+            msg += "\n".join(f"  {b}" for b in broken)
+            msg += "\nCreate the missing pages or fix the wikilinks before finishing."
+        return msg
     except Exception as e:
         return f"Store failed: {e}"
 

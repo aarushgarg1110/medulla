@@ -403,6 +403,16 @@ def test_store_wiki_page_writes_file(db, tmp_path):
     assert Path(result["path"]).exists()
 
 
+def test_store_wiki_page_explicit_slug(db, tmp_path):
+    """slug param overrides slugify(title) — title can be descriptive."""
+    wiki = tmp_path / "wiki"
+    content = "---\ntitle: MA-RAE: Macro-Averaged Relative Absolute Error\n---\n\n## Definition\n\nA metric."
+    result = store_wiki_page(db, wiki, "MA-RAE: Macro-Averaged Relative Absolute Error",
+                              content, page_type="concept", slug="ma-rae")
+    assert result["slug"] == "ma-rae"
+    assert (wiki / "concepts" / "ma-rae.md").exists()
+
+
 def test_store_wiki_page_with_source_url_appends_log(db, tmp_path):
     wiki = tmp_path / "wiki"
     content = "---\ntitle: Paper\n---\n\n## Summary\n\nContent."
@@ -474,3 +484,83 @@ def test_extract_summary_skips_frontmatter(tmp_path):
 def test_extract_summary_empty_content():
     from medulla.semantic.ingest import _extract_summary
     assert _extract_summary("") == ""
+
+
+def test_check_wikilinks_no_broken(tmp_path):
+    """_check_wikilinks returns empty list when all linked pages exist."""
+    from medulla.semantic.ingest import _check_wikilinks
+    wiki = tmp_path / "wiki"
+    (wiki / "concepts").mkdir(parents=True)
+    (wiki / "concepts" / "adam-optimizer.md").write_text("# Adam")
+    page = tmp_path / "source.md"
+    page.write_text("See [[concepts/adam-optimizer]] for details.")
+    assert _check_wikilinks(wiki, [page]) == []
+
+
+def test_check_wikilinks_detects_broken(tmp_path):
+    """_check_wikilinks catches missing [[folder/slug]] references."""
+    from medulla.semantic.ingest import _check_wikilinks
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    page = tmp_path / "source.md"
+    page.write_text("See [[concepts/adam-optimizer]] and [[entities/karpathy]].")
+    broken = _check_wikilinks(wiki, [page])
+    assert len(broken) == 2
+    assert any("adam-optimizer" in b for b in broken)
+    assert any("karpathy" in b for b in broken)
+
+
+def test_check_wikilinks_ignores_bare_slugs(tmp_path):
+    """_check_wikilinks ignores bare [[slug]] without folder prefix."""
+    from medulla.semantic.ingest import _check_wikilinks
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    page = tmp_path / "source.md"
+    page.write_text("See [[adam-optimizer]] (bare slug — ignored).")
+    assert _check_wikilinks(wiki, [page]) == []
+
+
+def test_pipeline_enforces_plan_slug_consistency(db, tmp_path, mock_provider):
+    """source_page.concepts wikilinks are filtered to match new_concepts slugs."""
+    import json
+    wiki = tmp_path / "wiki"
+
+    class DriftingProvider:
+        """Plan lists 'adam-optimizer' in new_concepts but source_page uses different slug."""
+        @property
+        def name(self): return "mock"
+        @property
+        def model(self): return "mock"
+        def generate(self, prompt, system=None, on_token=None):
+            if "STAGE: PLAN" in prompt:
+                return json.dumps({
+                    "source_page": {
+                        "title": "Test", "summary": "S", "key_points": [],
+                        "tags": [], "entities": [], "connections": [], "gaps": [],
+                        # deliberately uses wrong slug in concepts list
+                        "concepts": ["[[concepts/adam-optimizer-wrong]] — wrong slug"],
+                    },
+                    "new_concepts": [{"slug": "adam-optimizer", "title": "Adam", "brief": "optimizer"}],
+                    "new_entities": [],
+                    "update_concepts": [],
+                    "update_entities": [],
+                })
+            if "STAGE: CONCEPT" in prompt:
+                return json.dumps({
+                    "slug": "adam-optimizer", "title": "Adam Optimizer", "tags": [],
+                    "definition": "d", "how_it_works": "h", "why_it_matters": "w",
+                    "nuances": "n", "evidence": "e", "connections": [], "open_questions": [],
+                })
+            return json.dumps({"slug": "x", "title": "x", "tags": [], "who_what": "x",
+                                "relevance": "x", "contributions": [], "connections": []})
+
+    md = tmp_path / "paper.md"
+    md.write_text("# Paper\n\nContent.")
+    from medulla.semantic.ingest import intake_to_raw, process_pending
+    intake_to_raw(db, wiki, str(md))
+    results = process_pending(wiki, db, DriftingProvider())
+    source_content = (wiki / "sources" / f"{results[0]['source']}.md").read_text()
+    # The wrong slug should have been filtered out; no broken link to wrong slug
+    assert "adam-optimizer-wrong" not in source_content
+    # The concept page was created under the plan slug
+    assert (wiki / "concepts" / "adam-optimizer.md").exists()
