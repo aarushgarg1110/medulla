@@ -138,16 +138,108 @@ _TOOLS = [
     ),
     types.Tool(
         name="medulla_ingest",
-        description="Write findings or notes directly into the wiki as a new source page. Available after Sprint 3.",
+        description=(
+            "Store a wiki page you have synthesized. Call this tool MULTIPLE TIMES to build a fully connected graph — "
+            "one call per page type. Skipping concept/entity pages leaves orphaned nodes in Obsidian.\n\n"
+            "REQUIRED WORKFLOW for a complete graph:\n"
+            "0. Call medulla_wiki_schema FIRST to get existing page slugs — use ONLY those slugs for [[wikilinks]]\n"
+            "1. page_type='source': the full source summary\n"
+            "2. page_type='concept': once per significant concept — NO LIMIT, create as many as are meaningful\n"
+            "3. page_type='entity': once per significant entity — NO LIMIT\n\n"
+            "CRITICAL: Concept and entity pages MUST include 'sources: [source-slug]' in their frontmatter. "
+            "This creates bidirectional edges in the Obsidian graph. Without it, nodes are isolated.\n\n"
+            "SOURCE PAGE format:\n"
+            "---\\ntitle: Full Title\\nsource: <url or path>\\ndate_ingested: YYYY-MM-DD\\n"
+            "tags: [tag1, tag2, ...]\\n---\\n"
+            "## Summary\\n## Key Points\\n## Concepts Introduced or Updated\\n"
+            "## Entities Mentioned\\n## Connections\\n## Gaps / Open Questions\n\n"
+            "CONCEPT PAGE format:\n"
+            "---\\ntitle: Concept Name\\ntags: [tag1, tag2]\\nsources: [source-slug]\\n---\\n"
+            "## Definition\\n## How It Works\\n## Why It Matters\\n## Nuances & Caveats\\n"
+            "## Evidence & Examples\\n## Connections\\n## Open Questions\n\n"
+            "ENTITY PAGE format:\n"
+            "---\\ntitle: Entity Name\\ntype: person|org|tool|project|database\\n"
+            "tags: [tag1]\\nsources: [source-slug]\\n---\\n"
+            "## Who / What\\n## Relevance\\n## Key Contributions / Features\\n## Connections\n\n"
+            "Be generous with tags — they power the Obsidian graph filter. "
+            "No limit on concepts or entities — create as many as are genuinely meaningful. "
+            "ALWAYS pass source_path when you read a local file (PDF, markdown) — the file gets copied to wiki/raw/ as an immutable archive. "
+            "ALWAYS pass source_url when you fetched via WebFetch — the URL gets logged to url-references.md. "
+            "Both can be provided for a PDF downloaded from a URL.\n\n"
+            "WIKILINK PATH CONVENTION — this is critical for Obsidian graph correctness:\n"
+            "- Concepts: [[concepts/slug]] e.g. [[concepts/adam-optimizer]]\n"
+            "- Entities: [[entities/slug]] e.g. [[entities/andrej-karpathy]]\n"
+            "- Sources: [[sources/slug]] e.g. [[sources/microgpt-karpathy-2026]]\n"
+            "NEVER use bare [[slug]] — always include the folder prefix. "
+            "medulla_wiki_schema returns slugs in this exact format — copy them verbatim. "
+            "When the schema is empty (first ingest), plan ALL slugs for this session upfront, "
+            "then write every wikilink as [[concepts/slug]] or [[entities/slug]] consistently throughout.\n\n"
+            "SLUG CONSISTENCY — wikilinks must resolve to real pages.\n"
+            "The stored slug is: slug param if provided, else slugify(title).\n"
+            "Your wikilinks MUST match the stored slug exactly.\n"
+            "BEST PRACTICE: always pass slug= explicitly to decouple title from slug:\n"
+            "  title='MA-RAE: Macro-Averaged Relative Absolute Error', slug='ma-rae'\n"
+            "  → stored as concepts/ma-rae, wikilink [[concepts/ma-rae]] resolves correctly\n"
+            "WITHOUT slug param: slugify(title) must equal your wikilink slug:\n"
+            "  title='Adam Optimizer' → slug='adam-optimizer' → [[concepts/adam-optimizer]] ✓\n"
+            "  title='MA-RAE: Macro-Averaged...' → slug='ma-rae-macro-averaged-...' → [[concepts/ma-rae]] ✗\n"
+            "WORKFLOW: plan your slugs first, then pass slug= on every concept/entity call."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
-                "title": {"type": "string"},
-                "content": {"type": "string"},
+                "title": {"type": "string", "description": "Page title — can be as descriptive as needed. Use slug param to control the wikilink slug explicitly."},
+                "slug": {"type": "string", "description": "Explicit slug override (lowercase-hyphenated, e.g. 'ma-rae'). Use this to decouple the wikilink slug from the title. If omitted, slugify(title) is used. ALWAYS provide slug when your wikilinks use a short slug but the title is long/descriptive."},
+                "content": {"type": "string", "description": "Full markdown content you have synthesized"},
+                "page_type": {"type": "string", "enum": ["source", "concept", "entity"], "default": "source"},
                 "tags": {"type": "array", "items": {"type": "string"}},
+                "source_url": {"type": "string", "description": "Original URL if you fetched via WebFetch (appended to url-references.md log)"},
+                "source_path": {"type": "string", "description": "Local file path if you read a PDF/file (e.g. /Users/agarg/Downloads/paper.pdf) — file is copied to wiki/raw/ for immutable archive"},
             },
             "required": ["title", "content"],
         },
+    ),
+    types.Tool(
+        name="medulla_ingest_url",
+        description=(
+            "Fetch a URL, synthesize it using the configured LLM provider, and store wiki pages. "
+            "Use this ONLY if you cannot fetch URLs yourself (no WebFetch tool). "
+            "If you have WebFetch, fetch the URL yourself, synthesize the content, and call medulla_ingest instead — "
+            "that keeps the synthesis in your context and uses the model you are already running."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to fetch and ingest"},
+                "title": {"type": "string", "description": "Optional title override"},
+            },
+            "required": ["url"],
+        },
+    ),
+    types.Tool(
+        name="medulla_wiki_schema",
+        description=(
+            "Get all existing wiki page slugs and titles. "
+            "CALL THIS FIRST before calling medulla_ingest for any source. "
+            "Use the returned slugs to write accurate [[wikilinks]] — only link to slugs that exist "
+            "or that you are about to create in this ingest session. "
+            "Linking to non-existent slugs fragments the Obsidian graph.\n\n"
+            "WIKILINK FORMAT: slugs are returned as [[concepts/slug]], [[entities/slug]], [[sources/slug]]. "
+            "Always include the folder prefix in wikilinks — never use bare [[slug]]. "
+            "When this returns empty (fresh wiki), you must still use the folder-prefixed format "
+            "for all pages you create: [[concepts/your-slug]], [[entities/your-slug]], [[sources/your-slug]]."
+        ),
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    types.Tool(
+        name="medulla_list_raw",
+        description=(
+            "List files in wiki/raw/ that haven't been processed yet. "
+            "Use this to see what's available for ingestion — files dropped by Obsidian Clipper, "
+            "PDFs placed manually, or URL text fetched by medulla. "
+            "You can then read a file from raw/ and call medulla_ingest with your synthesis."
+        ),
+        inputSchema={"type": "object", "properties": {}},
     ),
     types.Tool(
         name="medulla_analyze",
@@ -176,8 +268,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextCont
 
 # ── Tool dispatch ──────────────────────────────────────────────────────────────
 
-_WIKI_STUB = "Semantic wiki layer available in Sprint 3. Run `medulla ingest <file>` to add documents."
-
 _HANDLERS: dict[str, Any] = {
     "medulla_search": lambda conn, args: _tool_search(conn, args),
     "medulla_session_detail": lambda conn, args: _tool_session_detail(conn, args),
@@ -186,9 +276,12 @@ _HANDLERS: dict[str, Any] = {
     "medulla_list": lambda conn, args: _tool_list(conn, args),
     "medulla_stats": lambda conn, args: _tool_stats(conn),
     "medulla_events_search": lambda conn, args: _tool_events_search(conn, args),
-    "medulla_wiki_search": lambda conn, args: _WIKI_STUB,
-    "medulla_wiki_page": lambda conn, args: _WIKI_STUB,
-    "medulla_ingest": lambda conn, args: _WIKI_STUB,
+    "medulla_wiki_schema": lambda conn, args: _tool_wiki_schema(conn, args),
+    "medulla_wiki_search": lambda conn, args: _tool_wiki_search(conn, args),
+    "medulla_wiki_page": lambda conn, args: _tool_wiki_page(conn, args),
+    "medulla_ingest": lambda conn, args: _tool_ingest(conn, args),
+    "medulla_ingest_url": lambda conn, args: _tool_ingest_url(conn, args),
+    "medulla_list_raw": lambda conn, args: _tool_list_raw(conn, args),
     "medulla_analyze": lambda conn, args: _tool_analyze(conn, args),
 }
 
@@ -359,16 +452,24 @@ def _tool_list(conn, args: dict) -> str:
 
 
 def _tool_stats(conn) -> str:
+    from medulla.semantic.store import get_wiki_stats
     s = get_stats(conn)
+    ws = get_wiki_stats(conn)
     lines = [
-        f"Sessions:       {s['sessions']:,}",
-        f"Chunks:         {s['chunks']:,}",
-        f"Agent sessions: {s['agent_sessions']:,}",
-        f"Turns:          {s['turns']:,}",
-        f"Tool calls:     {s['tool_calls']:,}",
+        "Episodic:",
+        f"  Sessions:       {s['sessions']:,}",
+        f"  Chunks:         {s['chunks']:,}",
+        f"  Agent sessions: {s['agent_sessions']:,}",
+        f"  Turns:          {s['turns']:,}",
+        f"  Tool calls:     {s['tool_calls']:,}",
     ]
     if s["oldest"]:
-        lines.append(f"Date range:     {s['oldest'][:10]} → {s['newest'][:10]}")
+        lines.append(f"  Date range:     {s['oldest'][:10]} → {s['newest'][:10]}")
+    lines.append(f"\nSemantic (wiki):")
+    lines.append(f"  Pages:          {ws['total']:,}")
+    _PLURAL = {"source": "sources", "concept": "concepts", "entity": "entities"}
+    for pt, count in ws.get("by_type", {}).items():
+        lines.append(f"  {_PLURAL.get(pt, pt + 's'):<15} {count:,}")
     if s["top_tools"]:
         lines.append("\nTop tools:")
         for name, count in s["top_tools"]:
@@ -388,6 +489,119 @@ def _tool_events_search(conn, args: dict) -> str:
         lines.append(f"  {(r['event_ts'] or '')[:16]}  {r['tool']}  {(r['command'] or '')[:80]}")
         if r["output_preview"]:
             lines.append(f"    → {r['output_preview'][:60]}")
+    return "\n".join(lines)
+
+
+def _tool_wiki_schema(conn, args: dict) -> str:
+    from medulla.config import get_config
+    from medulla.semantic.ingest import _build_wiki_schema
+    wiki_path = get_config().wiki_path
+    schema = _build_wiki_schema(wiki_path)
+    return f"Current wiki pages (use these exact slugs for [[wikilinks]]):\n\n{schema}"
+
+
+def _tool_wiki_search(conn, args: dict) -> str:
+    from medulla.semantic.store import search_wiki
+    from medulla.search import _snippet
+    query = args.get("query", "").strip()
+    if not query:
+        return "Error: query is required"
+    page_type = args.get("type")
+    rows = search_wiki(conn, query, page_type=page_type, limit=args.get("limit", 10))
+    if not rows:
+        return f"No wiki pages found for: {query}"
+    lines = [f"{len(rows)} wiki page(s) for \"{query}\":\n"]
+    for row in rows:
+        lines.append(f"[{row['type']}] {row['slug']} — {row['title']}")
+        lines.append(f"  {_snippet(row['content'], 150)}\n")
+    return "\n".join(lines)
+
+
+def _tool_wiki_page(conn, args: dict) -> str:
+    from medulla.semantic.store import get_wiki_page
+    slug = args.get("slug", "").strip()
+    if not slug:
+        return "Error: slug is required"
+    row = get_wiki_page(conn, slug)
+    if not row:
+        return f"Wiki page not found: {slug}"
+    return f"# {row['title']} [{row['type']}]\n\n{row['content']}"
+
+
+def _tool_ingest(conn, args: dict) -> str:
+    """Pure storage — Claude has already synthesized the content."""
+    title = args.get("title", "").strip()
+    content = args.get("content", "").strip()
+    if not title or not content:
+        return "Error: title and content are required"
+    try:
+        from medulla.semantic.ingest import store_wiki_page
+        from medulla.config import get_config
+        wiki_path = get_config().wiki_path
+        result = store_wiki_page(
+            conn, wiki_path, title, content,
+            page_type=args.get("page_type", "source"),
+            tags=args.get("tags", []),
+            source_url=args.get("source_url"),
+            source_path=args.get("source_path"),
+            slug=args.get("slug") or None,
+        )
+        extras = []
+        if args.get("source_path"):
+            extras.append("PDF copied to raw/")
+        if args.get("source_url"):
+            extras.append("URL logged to url-references.md")
+        note = f" ({', '.join(extras)})" if extras else ""
+        msg = f"Stored: {result['slug']} ({result['type']}){note}"
+        broken = result.get("broken_wikilinks", [])
+        if broken:
+            msg += "\n⚠ Broken wikilinks in this page (these pages don't exist yet):\n"
+            msg += "\n".join(f"  {b}" for b in broken)
+            msg += "\nCreate the missing pages or fix the wikilinks before finishing."
+        return msg
+    except Exception as e:
+        return f"Store failed: {e}"
+
+
+def _tool_ingest_url(conn, args: dict) -> str:
+    """Fetch URL → raw/ → LLM → wiki pages. For clients without WebFetch."""
+    url = args.get("url", "").strip()
+    if not url:
+        return "Error: url is required"
+    try:
+        from medulla.llm import get_provider
+        from medulla.semantic.ingest import ingest_url_mcp
+        from medulla.config import get_config
+        provider = get_provider()
+        wiki_path = get_config().wiki_path
+        result = ingest_url_mcp(conn, url, wiki_path, provider, title=args.get("title"))
+        return (
+            f"Ingested: {result.get('source', '?')} ({result.get('total_pages', 0)} pages)\n"
+            f"Raw text saved to wiki/raw/ for backtrace."
+        )
+    except Exception as e:
+        return f"Ingest URL failed: {e}"
+
+
+def _tool_list_raw(conn, args: dict) -> str:
+    """List unprocessed files in wiki/raw/."""
+    from medulla.config import get_config
+    from medulla.semantic.store import get_pending
+    wiki_path = get_config().wiki_path
+    raw_dir = wiki_path / "raw"
+    if not raw_dir.exists():
+        return "wiki/raw/ is empty — no files to ingest yet."
+    skip = {"url-references.md"}
+    all_files = [f for f in sorted(raw_dir.iterdir()) if f.is_file() and f.name not in skip]
+    if not all_files:
+        return "wiki/raw/ is empty — no files to ingest yet."
+    pending = {row["source_path"] for row in get_pending(conn)}
+    lines = [f"{len(all_files)} file(s) in wiki/raw/:\n"]
+    for f in all_files:
+        status = "⏳ queued" if str(f) in pending else "✓ processed"
+        lines.append(f"  {status}  {f.name}")
+    lines.append("\nTo ingest a file: read it and call medulla_ingest with your synthesis.")
+    lines.append("Or call medulla_ingest_url(url) for URL sources if you lack WebFetch.")
     return "\n".join(lines)
 
 

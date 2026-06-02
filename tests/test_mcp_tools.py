@@ -2,7 +2,7 @@
 import pytest
 
 from medulla.episodic.store import upsert_session, upsert_agent_session
-from medulla.mcp import (
+from medulla.mcp import (  # noqa: E402
     _tool_search,
     _tool_session_detail,
     _tool_session_tree,
@@ -14,6 +14,17 @@ from medulla.mcp import (
     _dispatch,
 )
 from tests.test_store import make_session, make_agent
+
+
+@pytest.fixture(autouse=True)
+def isolated_config(tmp_path, monkeypatch):
+    """Ensure MCP tool tests never write to real ~/.medulla wiki dir."""
+    import medulla.config as cfg
+    cfg._config = None
+    test_cfg = cfg.Config(medulla_dir=tmp_path / ".medulla")
+    monkeypatch.setattr(cfg, "_config", test_cfg)
+    yield
+    cfg._config = None
 
 
 def _setup(db):
@@ -261,22 +272,190 @@ def test_tool_analyze_with_events(db):
 
 # ── wiki stubs ─────────────────────────────────────────────────────────────────
 
-def test_tool_wiki_search_stub(db):
-    from medulla.mcp import _HANDLERS, _WIKI_STUB
+def test_tool_wiki_search_empty(db):
+    from medulla.mcp import _HANDLERS
     result = _HANDLERS["medulla_wiki_search"](db, {"query": "logD"})
-    assert "Sprint 3" in result
+    assert "No wiki pages" in result or "result" in result
 
 
-def test_tool_wiki_page_stub(db):
-    from medulla.mcp import _HANDLERS, _WIKI_STUB
-    result = _HANDLERS["medulla_wiki_page"](db, {"slug": "logd-prediction"})
-    assert "Sprint 3" in result
+def test_tool_wiki_search_finds_page(db):
+    import sqlite3
+    from pathlib import Path
+    from medulla.mcp import _HANDLERS
+    from medulla.semantic.store import upsert_wiki_page
+    upsert_wiki_page(db, "logd-pred", "concept", "LogD Prediction",
+                     "LogD is a key ADMET property measuring lipophilicity.",
+                     Path("/wiki/concepts/logd-pred.md"))
+    result = _HANDLERS["medulla_wiki_search"](db, {"query": "lipophilicity"})
+    assert "logd-pred" in result or "LogD" in result
 
 
-def test_tool_ingest_stub(db):
-    from medulla.mcp import _HANDLERS, _WIKI_STUB
-    result = _HANDLERS["medulla_ingest"](db, {"title": "test", "content": "hello"})
-    assert "Sprint 3" in result
+def test_tool_wiki_search_missing_query(db):
+    from medulla.mcp import _HANDLERS
+    result = _HANDLERS["medulla_wiki_search"](db, {})
+    assert "Error" in result
+
+
+def test_tool_wiki_page_found(db):
+    from medulla.mcp import _HANDLERS
+    from medulla.semantic.store import upsert_wiki_page
+    from pathlib import Path
+    upsert_wiki_page(db, "logd-pred", "concept", "LogD Prediction",
+                     "# LogD\n\nKey ADMET property.", Path("/wiki/concepts/logd.md"))
+    result = _HANDLERS["medulla_wiki_page"](db, {"slug": "logd-pred"})
+    assert "LogD Prediction" in result
+    assert "ADMET" in result
+
+
+def test_tool_wiki_page_not_found(db):
+    from medulla.mcp import _HANDLERS
+    result = _HANDLERS["medulla_wiki_page"](db, {"slug": "nonexistent-page"})
+    assert "not found" in result.lower()
+
+
+def test_tool_wiki_page_missing_slug(db):
+    from medulla.mcp import _HANDLERS
+    result = _HANDLERS["medulla_wiki_page"](db, {})
+    assert "Error" in result
+
+
+def test_tool_ingest_mcp_stores_directly(db, tmp_path, monkeypatch):
+    """medulla_ingest MCP tool is pure storage — no LLM call needed."""
+    import medulla.config as cfg
+    cfg.get_config().medulla_dir.mkdir(parents=True, exist_ok=True)
+    from medulla.mcp import _HANDLERS
+    content = "---\ntitle: Test Finding\n---\n\n## Summary\n\nLogD batch effects observed."
+    result = _HANDLERS["medulla_ingest"](db, {"title": "Test Finding", "content": content})
+    assert "Stored" in result or "test-finding" in result
+
+
+def test_tool_ingest_with_source_path_copies_to_raw(db, tmp_path, monkeypatch):
+    """source_path copies local file to wiki/raw/."""
+    import medulla.config as cfg
+    cfg.get_config().medulla_dir.mkdir(parents=True, exist_ok=True)
+    # Create a fake PDF file
+    fake_pdf = tmp_path / "paper.pdf"
+    fake_pdf.write_bytes(b"fake pdf content")
+    content = "---\ntitle: Paper\n---\n\n## Summary\n\nContent."
+    from medulla.mcp import _HANDLERS
+    result = _HANDLERS["medulla_ingest"](db, {
+        "title": "Paper", "content": content,
+        "source_path": str(fake_pdf)
+    })
+    assert "Stored" in result
+    assert "raw/" in result or "PDF copied" in result
+    # Verify file was copied
+    wiki_raw = cfg.get_config().wiki_path / "raw" / "paper.pdf"
+    assert wiki_raw.exists()
+
+
+def test_tool_ingest_mcp_with_source_url(db, tmp_path, monkeypatch):
+    """medulla_ingest with source_url creates raw/ backtrace file."""
+    import medulla.config as cfg
+    cfg.get_config().medulla_dir.mkdir(parents=True, exist_ok=True)
+    from medulla.mcp import _HANDLERS
+    content = "---\ntitle: Paper\n---\n\n## Summary\n\nContent."
+    result = _HANDLERS["medulla_ingest"](db, {
+        "title": "Paper", "content": content,
+        "source_url": "https://example.com/paper"
+    })
+    assert "Stored" in result or "paper" in result
+
+
+def test_tool_ingest_url_with_mock(db, tmp_path, monkeypatch):
+    """medulla_ingest_url fetches URL and uses configured LLM."""
+    from tests.test_ingest_pipeline import MockProvider
+    monkeypatch.setattr("medulla.llm.get_provider", MockProvider)
+    import medulla.config as cfg
+    cfg.get_config().medulla_dir.mkdir(parents=True, exist_ok=True)
+
+    class MockResponse:
+        text = "<html><head><title>LogD Study</title></head><body><p>LogD batch effect analysis.</p></body></html>"
+        def raise_for_status(self): pass
+
+    monkeypatch.setattr("httpx.get", lambda url, **kw: MockResponse())
+    from medulla.mcp import _HANDLERS
+    result = _HANDLERS["medulla_ingest_url"](db, {"url": "https://example.com/logd"})
+    assert "Ingested" in result or "raw" in result.lower()
+
+
+def test_tool_ingest_url_missing_url(db):
+    from medulla.mcp import _HANDLERS
+    result = _HANDLERS["medulla_ingest_url"](db, {})
+    assert "Error" in result
+
+
+def test_tool_ingest_missing_fields(db):
+    from medulla.mcp import _HANDLERS
+    result = _HANDLERS["medulla_ingest"](db, {"title": "Only title"})
+    assert "Error" in result
+
+
+def _make_cfg(tmp_path):
+    import medulla.config as cfg
+    c = cfg.Config(medulla_dir=tmp_path / ".medulla")
+    return c
+
+
+def test_tool_wiki_schema_empty(db, tmp_path, monkeypatch):
+    c = _make_cfg(tmp_path)
+    c.wiki_path.mkdir(parents=True)
+    import medulla.config as cfg_mod
+    monkeypatch.setattr(cfg_mod, "get_config", lambda: c)
+    from medulla.mcp import _tool_wiki_schema
+    result = _tool_wiki_schema(db, {})
+    assert "No existing pages" in result or "first ingest" in result
+
+
+def test_tool_wiki_schema_with_pages(db, tmp_path, monkeypatch):
+    c = _make_cfg(tmp_path)
+    c.wiki_path.mkdir(parents=True)
+    (c.wiki_path / "concepts").mkdir()
+    (c.wiki_path / "concepts" / "multi-head-attention.md").write_text(
+        "---\ntitle: Multi-Head Attention\n---\nContent."
+    )
+    import medulla.config as cfg_mod
+    monkeypatch.setattr(cfg_mod, "get_config", lambda: c)
+    from medulla.mcp import _tool_wiki_schema
+    result = _tool_wiki_schema(db, {})
+    assert "multi-head-attention" in result
+    assert "concepts/" in result
+
+
+def test_tool_list_raw_empty(db, tmp_path, monkeypatch):
+    c = _make_cfg(tmp_path)
+    import medulla.config as cfg_mod
+    monkeypatch.setattr(cfg_mod, "get_config", lambda: c)
+    from medulla.mcp import _tool_list_raw
+    result = _tool_list_raw(db, {})
+    assert "empty" in result.lower() or "no files" in result.lower()
+
+
+def test_tool_list_raw_with_files(db, tmp_path, monkeypatch):
+    c = _make_cfg(tmp_path)
+    raw = c.wiki_path / "raw"
+    raw.mkdir(parents=True)
+    (raw / "paper.md").write_text("# Paper\nContent.")
+    import medulla.config as cfg_mod
+    monkeypatch.setattr(cfg_mod, "get_config", lambda: c)
+    from medulla.mcp import _tool_list_raw
+    result = _tool_list_raw(db, {})
+    assert "paper.md" in result
+
+
+def test_tool_list_raw_shows_queued_vs_processed(db, tmp_path, monkeypatch):
+    from medulla.semantic.store import queue_pending
+    c = _make_cfg(tmp_path)
+    raw = c.wiki_path / "raw"
+    raw.mkdir(parents=True)
+    paper = raw / "unprocessed.md"
+    paper.write_text("# Unprocessed\nContent.")
+    queue_pending(db, str(paper), "md", "Unprocessed")
+    import medulla.config as cfg_mod
+    monkeypatch.setattr(cfg_mod, "get_config", lambda: c)
+    from medulla.mcp import _tool_list_raw
+    result = _tool_list_raw(db, {})
+    assert "queued" in result.lower() or "⏳" in result
 
 
 # ── project context with events ───────────────────────────────────────────────

@@ -22,7 +22,7 @@ def search(
     query: str,
     limit: int = 10,
     layer: str | None = None,
-) -> list[SearchResult]:
+) -> list[SearchResult]:  # noqa: C901
     """Search FTS5 indexes. Returns results ranked by BM25."""
     if not query.strip():
         return []
@@ -34,7 +34,10 @@ def search(
         results.extend(_search_chunks(conn, fts_query, limit))
         results.extend(_search_sessions(conn, fts_query, limit))
 
-    # Deduplicate: one result per session_id, prefer best-ranked chunk over session-level match
+    if layer is None or layer == "semantic":
+        results.extend(_search_wiki(conn, fts_query, limit))
+
+    # Deduplicate: one result per session_id / wiki slug, prefer best-ranked chunk over session-level match
     seen: dict[str, SearchResult] = {}
     for r in sorted(results, key=lambda x: x.rank):
         if r.id not in seen:
@@ -114,6 +117,41 @@ def _search_sessions(conn: sqlite3.Connection, fts_query: str, limit: int) -> li
             rank=row["rank"],
         ))
     return results
+
+
+def _search_wiki(conn: sqlite3.Connection, fts_query: str, limit: int) -> list[SearchResult]:
+    try:
+        rows = conn.execute("""
+            SELECT wp.slug, wp.type, wp.title, wp.content, wf.rank
+            FROM wiki_fts wf
+            JOIN wiki_pages wp ON wp.rowid = wf.rowid
+            WHERE wiki_fts MATCH ?
+            ORDER BY wf.rank LIMIT ?
+        """, (fts_query, limit)).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    results = []
+    for row in rows:
+        results.append(SearchResult(
+            layer="semantic",
+            result_type="wiki_page",
+            id=row["slug"],
+            title=f"[{row['type']}] {row['title']}",
+            excerpt=_snippet(_strip_frontmatter(row["content"]), 200),
+            project_dir=None,
+            date=None,
+            rank=row["rank"],
+        ))
+    return results
+
+
+def _strip_frontmatter(content: str) -> str:
+    """Remove YAML frontmatter (--- ... ---) before excerpting."""
+    if content.startswith("---"):
+        end = content.find("\n---", 3)
+        if end != -1:
+            return content[end + 4:].lstrip()
+    return content
 
 
 def _to_fts_query(query: str) -> str:

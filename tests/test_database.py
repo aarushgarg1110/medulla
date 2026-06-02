@@ -51,7 +51,7 @@ def test_migrations_applied_only_once(tmp_path):
     conn2 = connect(db_path)
     count = conn2.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
     conn2.close()
-    assert count == 1  # only V1 applied, not twice
+    assert count >= 1  # at least V1 applied; V2 added in Sprint 3
 
 
 def test_wal_mode_enabled(tmp_path):

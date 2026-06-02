@@ -10,6 +10,7 @@ from medulla.episodic.parser import (
     _extract_assistant_text,
     _extract_paths,
     _extract_user_text,
+    _is_kiro_format,
     _read_json,
     is_subagent_file,
     parse_agent_session,
@@ -309,6 +310,100 @@ def test_parse_agent_session_returns_none_no_user_messages(tmp_path):
     path = subdir / "agent-nouser.jsonl"
     path.write_text(make_claude_jsonl([claude_assistant(["Bash"])]))
     assert parse_agent_session(path) is None
+
+
+# ── Kiro format ───────────────────────────────────────────────────────────────
+
+def _kiro_line(kind: str, text: str = "", tools: list | None = None, ts: int = 1779386792) -> str:
+    content = []
+    if text:
+        content.append({"kind": "text", "data": text})
+    for t in (tools or []):
+        content.append({"kind": "toolUse", "data": {"toolUseId": "id1", "name": t, "input": {}}})
+    return json.dumps({
+        "version": "v1",
+        "kind": kind,
+        "data": {"message_id": "msg-1", "content": content, "meta": {"timestamp": ts}},
+    })
+
+
+def test_is_kiro_format_detects_kiro():
+    body = _kiro_line("Prompt", "hello") + "\n" + _kiro_line("AssistantMessage", "hi")
+    assert _is_kiro_format(body) is True
+
+
+def test_is_kiro_format_rejects_claude():
+    body = json.dumps({"type": "user", "message": {"role": "user", "content": "hi"}})
+    assert _is_kiro_format(body) is False
+
+
+def test_is_kiro_format_empty():
+    assert _is_kiro_format("") is False
+
+
+def test_parse_kiro_basic(tmp_path):
+    lines = [
+        _kiro_line("Prompt", "what am I working on?", ts=1779000000),
+        _kiro_line("AssistantMessage", "You are working on medulla.", tools=["medulla_list"], ts=1779000060),
+        _kiro_line("Prompt", "show me more detail", ts=1779000120),
+        _kiro_line("AssistantMessage", "Here are the details.", ts=1779000180),
+    ]
+    path = tmp_path / "kiro-session.jsonl"
+    path.write_text("\n".join(lines))
+
+    result = parse_session(path)
+    assert result is not None
+    assert result.source == "kiro"
+    assert result.first_message == "what am I working on?"
+    assert "You are working on medulla" in result.all_user_text
+    assert "show me more detail" in result.all_user_text
+    assert result.turn_count == 2
+    assert result.tool_call_count == 1
+    assert "medulla_list" in result.tool_names
+    assert len(result.messages) == 4  # 2 user + 2 assistant
+
+
+def test_parse_kiro_timestamps(tmp_path):
+    lines = [
+        _kiro_line("Prompt", "first", ts=1779000000),
+        _kiro_line("AssistantMessage", "response", ts=1779000060),
+    ]
+    path = tmp_path / "kiro-ts.jsonl"
+    path.write_text("\n".join(lines))
+    result = parse_session(path)
+    assert result is not None
+    assert result.started_at is not None
+    assert result.ended_at is not None
+    assert result.started_at < result.ended_at
+
+
+def test_parse_kiro_no_user_returns_none(tmp_path):
+    lines = [_kiro_line("AssistantMessage", "only assistant")]
+    path = tmp_path / "kiro-nouser.jsonl"
+    path.write_text("\n".join(lines))
+    assert parse_session(path) is None
+
+
+def test_parse_kiro_empty_returns_none(tmp_path):
+    path = tmp_path / "kiro-empty.jsonl"
+    path.write_text("")
+    assert parse_session(path) is None
+
+
+def test_parse_kiro_tool_results_skipped(tmp_path):
+    """ToolResults lines should be ignored, not counted."""
+    lines = [
+        _kiro_line("Prompt", "run a tool"),
+        _kiro_line("AssistantMessage", "ok", tools=["medulla_search"]),
+        json.dumps({"version": "v1", "kind": "ToolResults", "data": {"message_id": "r1", "content": []}}),
+        _kiro_line("AssistantMessage", "done"),
+    ]
+    path = tmp_path / "kiro-tools.jsonl"
+    path.write_text("\n".join(lines))
+    result = parse_session(path)
+    assert result is not None
+    assert result.turn_count == 2  # only AssistantMessage lines counted
+    assert result.tool_call_count == 1
 
 
 # ── _extract_user_text ────────────────────────────────────────────────────────
