@@ -327,15 +327,12 @@ def append_url_reference(
     if not log_path.exists():
         log_path.write_text(
             "# URL References\n\n"
-            "Sources ingested via WebFetch in Claude Code / Kiro sessions.\n"
-            "Format: `## [YYYY-MM-DD] slug`\n\n"
+            "Sources ingested via WebFetch in Claude Code / Kiro sessions.\n\n"
+            "| Date | Source | Wiki |\n"
+            "|---|---|---|\n"
         )
-    entry = (
-        f"## [{date.today().isoformat()}] {slug}\n"
-        f"URL: {url}\n"
-        f"Title: {title or slug}\n"
-        f"Wiki: [[sources/{slug}]]\n\n"
-    )
+    display = title or slug
+    entry = f"| {date.today().isoformat()} | [{display}]({url}) | [[sources/{slug}]] |\n"
     log_path.write_text(log_path.read_text() + entry)
     return log_path
 
@@ -487,11 +484,13 @@ def _refresh_index_stats(index_path: Path) -> None:
 def append_log(wiki_path: Path, operation: str, title: str, details: str = "") -> None:
     log_path = wiki_path / "log.md"
     if not log_path.exists():
-        log_path.write_text("# Wiki Log\n\nAppend-only record. Format: `## [YYYY-MM-DD] <op> | <title>`\n\n")
-    entry = f"## [{date.today().isoformat()}] {operation} | {title}\n"
-    if details:
-        entry += f"\n{details}\n"
-    entry += "\n"
+        log_path.write_text(
+            "# Wiki Log\n\nAppend-only record of all wiki operations.\n\n"
+            "| Date | Operation | Title | Details |\n"
+            "|---|---|---|---|\n"
+        )
+    detail_cell = details.replace("\n", " · ")[:80] if details else ""
+    entry = f"| {date.today().isoformat()} | {operation} | {title} | {detail_cell} |\n"
     log_path.write_text(log_path.read_text() + entry)
 
 
