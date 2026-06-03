@@ -83,6 +83,23 @@ claude mcp add medulla medulla -- mcp
 
 ## Configuration
 
+### Data directory
+
+Medulla stores everything in `~/.medulla/`:
+
+```
+~/.medulla/
+├── medulla.db        # SQLite DB — all sessions, wiki pages, FTS5 index
+├── config.toml       # provider + model settings
+└── wiki/             # Obsidian-compatible wiki vault
+    ├── index.md
+    ├── log.md
+    ├── raw/           # immutable source archives (PDFs, markdown)
+    ├── sources/
+    ├── concepts/
+    └── entities/
+```
+
 ### LLM Provider
 
 ```bash
