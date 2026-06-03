@@ -127,7 +127,7 @@ def test_content_words_filters_short_words():
 
 
 def test_content_words_lowercased():
-    words = _content_words("LogD SALACIA Batch")
+    words = _content_words("LogD COMPOUNDX Batch")
     assert "logd" in words
     assert "compoundx" in words
 
