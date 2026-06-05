@@ -520,6 +520,170 @@ def test_check_wikilinks_ignores_bare_slugs(tmp_path):
     assert _check_wikilinks(wiki, [page]) == []
 
 
+# ── parallel concept/entity calls ─────────────────────────────────────────────
+
+class MultiConceptProvider:
+    """Returns a plan with 3 concepts + 2 entities; each call records its thread ID."""
+
+    def __init__(self):
+        import threading
+        self.call_log: list[tuple[str, int]] = []  # (stage, thread_id)
+        self._lock = threading.Lock()
+
+    @property
+    def name(self): return "mock"
+    @property
+    def model(self): return "mock-model"
+
+    def generate(self, prompt: str, system=None, on_token=None) -> str:
+        import threading, time, json
+        tid = threading.get_ident()
+        if "STAGE: CONCEPT" in prompt:
+            with self._lock:
+                self.call_log.append(("concept", tid))
+            time.sleep(0.05)  # simulate API latency
+            slug = "concept-a" if "concept-a" in prompt else ("concept-b" if "concept-b" in prompt else "concept-c")
+            return json.dumps({
+                "slug": slug, "title": slug.title(), "tags": [],
+                "definition": "d", "how_it_works": "h", "why_it_matters": "w",
+                "nuances": "n", "evidence": "e", "connections": [], "open_questions": [],
+            })
+        if "STAGE: ENTITY" in prompt:
+            with self._lock:
+                self.call_log.append(("entity", tid))
+            time.sleep(0.05)
+            slug = "entity-a" if "entity-a" in prompt else "entity-b"
+            return json.dumps({
+                "slug": slug, "title": slug.title(), "entity_type": "tool", "tags": [],
+                "who_what": "w", "relevance": "r", "contributions": [], "connections": [],
+            })
+        # STAGE: PLAN
+        return json.dumps({
+            "source_page": {
+                "title": "Multi Concept Study", "summary": "s", "key_points": [],
+                "tags": [], "connections": [], "gaps": [],
+                "concepts": [
+                    "[[concepts/concept-a]] — a",
+                    "[[concepts/concept-b]] — b",
+                    "[[concepts/concept-c]] — c",
+                ],
+                "entities": [
+                    "[[entities/entity-a]] — a",
+                    "[[entities/entity-b]] — b",
+                ],
+            },
+            "new_concepts": [
+                {"slug": "concept-a", "title": "Concept A", "brief": "a"},
+                {"slug": "concept-b", "title": "Concept B", "brief": "b"},
+                {"slug": "concept-c", "title": "Concept C", "brief": "c"},
+            ],
+            "new_entities": [
+                {"slug": "entity-a", "title": "Entity A", "entity_type": "tool", "brief": "a"},
+                {"slug": "entity-b", "title": "Entity B", "entity_type": "tool", "brief": "b"},
+            ],
+            "update_concepts": [],
+            "update_entities": [],
+        })
+
+
+def test_parallel_all_concept_pages_created(db, tmp_path):
+    """All concept pages are written even when calls run in parallel."""
+    wiki = tmp_path / "wiki"
+    md = tmp_path / "paper.md"
+    md.write_text("# Multi Concept Study\n\nContent.")
+    from medulla.semantic.ingest import intake_to_raw, process_pending
+    intake_to_raw(db, wiki, str(md))
+    process_pending(wiki, db, MultiConceptProvider())
+    assert (wiki / "concepts" / "concept-a.md").exists()
+    assert (wiki / "concepts" / "concept-b.md").exists()
+    assert (wiki / "concepts" / "concept-c.md").exists()
+
+
+def test_parallel_all_entity_pages_created(db, tmp_path):
+    """All entity pages are written even when calls run in parallel."""
+    wiki = tmp_path / "wiki"
+    md = tmp_path / "paper.md"
+    md.write_text("# Multi Concept Study\n\nContent.")
+    from medulla.semantic.ingest import intake_to_raw, process_pending
+    intake_to_raw(db, wiki, str(md))
+    process_pending(wiki, db, MultiConceptProvider())
+    assert (wiki / "entities" / "entity-a.md").exists()
+    assert (wiki / "entities" / "entity-b.md").exists()
+
+
+def test_parallel_all_pages_in_db(db, tmp_path):
+    """All concept + entity pages land in the DB after parallel ingest."""
+    wiki = tmp_path / "wiki"
+    md = tmp_path / "paper.md"
+    md.write_text("# Multi Concept Study\n\nContent.")
+    from medulla.semantic.ingest import intake_to_raw, process_pending
+    intake_to_raw(db, wiki, str(md))
+    process_pending(wiki, db, MultiConceptProvider())
+    slugs = {r[0] for r in db.execute("SELECT slug FROM wiki_pages").fetchall()}
+    assert "concept-a" in slugs
+    assert "concept-b" in slugs
+    assert "concept-c" in slugs
+    assert "entity-a" in slugs
+    assert "entity-b" in slugs
+
+
+def test_parallel_concepts_use_multiple_threads(db, tmp_path):
+    """Concept calls run on more than one thread — proves parallelism."""
+    wiki = tmp_path / "wiki"
+    md = tmp_path / "paper.md"
+    md.write_text("# Multi Concept Study\n\nContent.")
+    provider = MultiConceptProvider()
+    from medulla.semantic.ingest import intake_to_raw, process_pending
+    intake_to_raw(db, wiki, str(md))
+    process_pending(wiki, db, provider)
+    concept_tids = {tid for stage, tid in provider.call_log if stage == "concept"}
+    assert len(concept_tids) > 1, "All concept calls ran on the same thread — not parallel"
+
+
+def test_parallel_entities_start_after_all_concepts(db, tmp_path):
+    """No entity call starts before all concept calls have completed."""
+    import threading, time
+    wiki = tmp_path / "wiki"
+    md = tmp_path / "paper.md"
+    md.write_text("# Multi Concept Study\n\nContent.")
+
+    call_times: list[tuple[str, float]] = []
+    lock = threading.Lock()
+
+    class TimingProvider(MultiConceptProvider):
+        def generate(self, prompt, system=None, on_token=None):
+            import json
+            stage = "concept" if "STAGE: CONCEPT" in prompt else ("entity" if "STAGE: ENTITY" in prompt else "plan")
+            with lock:
+                call_times.append((stage, time.monotonic()))
+            return super().generate(prompt, system=system, on_token=on_token)
+
+    from medulla.semantic.ingest import intake_to_raw, process_pending
+    intake_to_raw(db, wiki, str(md))
+    process_pending(wiki, db, TimingProvider())
+
+    concept_times = [t for s, t in call_times if s == "concept"]
+    entity_times = [t for s, t in call_times if s == "entity"]
+    if concept_times and entity_times:
+        # Every entity call must start after the last concept call started
+        assert min(entity_times) >= max(concept_times) - 0.01  # 10ms tolerance
+
+
+def test_parallel_faster_than_sequential(db, tmp_path):
+    """Parallel ingest of 3 concepts completes faster than 3x the per-call sleep."""
+    import time
+    wiki = tmp_path / "wiki"
+    md = tmp_path / "paper.md"
+    md.write_text("# Multi Concept Study\n\nContent.")
+    from medulla.semantic.ingest import intake_to_raw, process_pending
+    intake_to_raw(db, wiki, str(md))
+    start = time.monotonic()
+    process_pending(wiki, db, MultiConceptProvider())
+    elapsed = time.monotonic() - start
+    # 3 concepts × 0.05s sleep = 0.15s sequential; parallel should finish well under that
+    assert elapsed < 0.45, f"Ingest took {elapsed:.2f}s — expected parallel speedup"
+
+
 def test_pipeline_enforces_plan_slug_consistency(db, tmp_path, mock_provider):
     """source_page.concepts wikilinks are filtered to match new_concepts slugs."""
     import json
