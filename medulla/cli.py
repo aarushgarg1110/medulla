@@ -60,7 +60,8 @@ def search(
         else:
             date_str = r.date[:10] if r.date else ""
             proj = r.project_dir.split("/")[-1] if r.project_dir else ""
-            label = f"[bold cyan]{r.id[:8]}[/bold cyan]  [dim]{date_str}  {proj}[/dim]"
+            chunk_hint = f"  [dim]chunk {r.chunk_index}[/dim]" if r.chunk_index is not None else ""
+            label = f"[bold cyan]{r.id[:8]}[/bold cyan]  [dim]{date_str}  {proj}[/dim]{chunk_hint}"
         console.print(f"\n{label}")
         console.print(f"  [italic]{r.excerpt}[/italic]")
 
@@ -141,6 +142,7 @@ def stats():
 @app.command(name="session-detail")
 def session_detail(
     session_id: Annotated[str, typer.Argument(help="Session ID (full or 8-char prefix)")],
+    chunk: Annotated[Optional[int], typer.Option("--chunk", "-c", help="Show only this chunk index (0-based)")] = None,
 ):
     """Show full detail for a session — chunks, agents, files touched."""
     from medulla.db.database import connect
@@ -165,6 +167,17 @@ def session_detail(
         raise typer.Exit(1)
 
     s = detail["session"]
+    total_chunks = len(detail["chunks"])
+
+    if chunk is not None:
+        matches = [c for c in detail["chunks"] if c["chunk_index"] == chunk]
+        if not matches:
+            console.print(f"[red]Chunk {chunk} not found. Session has {total_chunks} chunks (0–{total_chunks - 1}).[/red]")
+            raise typer.Exit(1)
+        console.print(f"\n[dim]── Chunk {chunk} of {total_chunks - 1} · Session {session_id[:8]} ──[/dim]")
+        console.print(matches[0]["chunk_text"])
+        return
+
     console.print(f"\n[bold]Session:[/bold] {s['session_id']}")
     console.print(f"  Project:    {s.get('project_dir', '')}")
     console.print(f"  Model:      {s.get('model', '')}")
@@ -176,7 +189,7 @@ def session_detail(
         for a in detail["agents"]:
             console.print(f"    {a['agent_id'][:8]}  {a.get('first_message', '')[:60]}")
 
-    console.print(f"\n  [bold]Chunks ({len(detail['chunks'])}):[/bold]")
+    console.print(f"\n  [bold]Chunks ({total_chunks}):[/bold]")
     for c in detail["chunks"]:
         console.print(f"\n[dim]── Chunk {c['chunk_index']} (turns {c['turn_start']}–{c['turn_end']}) ──[/dim]")
         console.print(c["chunk_text"][:400])

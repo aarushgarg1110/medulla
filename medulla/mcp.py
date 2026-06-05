@@ -310,7 +310,9 @@ def _tool_search(conn, args: dict) -> str:
     for r in results:
         date = (r.date or "")[:10]
         proj = (r.project_dir or "").split("/")[-1]
-        lines.append(f"[{r.id[:8]}]  {date}  {proj}")
+        lines.append(f"[{r.id[:8]}]  {date}  {r.layer}  {proj}")
+        if r.chunk_index is not None:
+            lines.append(f"  → medulla_session_detail(session_id=\"{r.id[:8]}\", chunk_index={r.chunk_index})")
         lines.append(f"  {r.excerpt}\n")
     return "\n".join(lines)
 

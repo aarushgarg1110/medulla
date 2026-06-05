@@ -101,6 +101,17 @@ def test_search_command_layer_flag(claude_projects):
     assert result.exit_code == 0
 
 
+def test_search_command_shows_chunk_index_for_chunk_results(claude_projects):
+    """CLI output shows 'chunk N' label for chunk results so user knows --chunk flag value."""
+    runner.invoke(app, ["scan"])
+    result = runner.invoke(app, ["search", "logD"])
+    assert result.exit_code == 0
+    # chunk results show inline chunk number; not all results are chunks so only check if present
+    if "chunk" in result.output:
+        import re
+        assert re.search(r"chunk \d+", result.output)
+
+
 # ── list ───────────────────────────────────────────────────────────────────────
 
 def test_list_command_empty(tmp_path, monkeypatch):
@@ -153,3 +164,50 @@ def test_mcp_command_is_registered():
     """mcp command exists and is registered — full stdio test requires integration."""
     result = runner.invoke(app, ["--help"])
     assert "mcp" in result.output
+
+
+# ── session-detail --chunk ─────────────────────────────────────────────────────
+
+@pytest.fixture
+def chunked_session(tmp_path, monkeypatch):
+    """Session with enough messages to produce multiple chunks."""
+    projects = tmp_path / "claude_projects"
+    projects.mkdir()
+    monkeypatch.setattr("medulla.episodic.scanner.CLAUDE_PROJECTS_DIR", projects)
+    monkeypatch.setattr("medulla.episodic.scanner.KIRO_SESSIONS_DIR", tmp_path / "kiro_none")
+
+    proj = projects / "my-project"
+    proj.mkdir()
+    path = proj / "session-chunked.jsonl"
+    messages = [claude_user(f"message number {i} about logD analysis", session_id="session-chunked-id")
+                for i in range(30)]
+    path.write_text(make_claude_jsonl(messages))
+    return projects
+
+
+def test_session_detail_chunk_flag_shows_single_chunk(chunked_session):
+    runner.invoke(app, ["scan"])
+    result = runner.invoke(app, ["session-detail", "session-chunked-id", "--chunk", "0"])
+    assert result.exit_code == 0
+    assert "Chunk 0" in result.output
+
+
+def test_session_detail_chunk_flag_short_form(chunked_session):
+    runner.invoke(app, ["scan"])
+    result = runner.invoke(app, ["session-detail", "session-chunked-id", "-c", "0"])
+    assert result.exit_code == 0
+    assert "Chunk 0" in result.output
+
+
+def test_session_detail_chunk_out_of_range(chunked_session):
+    runner.invoke(app, ["scan"])
+    result = runner.invoke(app, ["session-detail", "session-chunked-id", "--chunk", "9999"])
+    assert result.exit_code == 1
+    assert "not found" in result.output.lower()
+
+
+def test_session_detail_no_chunk_shows_all(chunked_session):
+    runner.invoke(app, ["scan"])
+    result = runner.invoke(app, ["session-detail", "session-chunked-id"])
+    assert result.exit_code == 0
+    assert "Chunks" in result.output

@@ -21,3 +21,10 @@ htmlcov/
 # uv / python version pin
 .python-version
 sanity-output/
+
+# Personal learning notes (not for publish)
+notes/
+
+# Claude Code local config + instructions (personal, not for publish)
+.claude/
+CLAUDE.md

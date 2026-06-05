@@ -15,6 +15,7 @@ class SearchResult:
     project_dir: str | None
     date: str | None
     rank: float
+    chunk_index: int | None = None  # set for result_type="chunk"; use with medulla_session_detail
 
 
 def search(
@@ -76,11 +77,12 @@ def _search_chunks(conn: sqlite3.Connection, fts_query: str, limit: int) -> list
             layer="episodic",
             result_type="chunk",
             id=row["session_id"],
-            title=f"Session {row['session_id'][:8]} chunk {row['chunk_index']}",
+            title=f"Session {row['session_id'][:8]}",
             excerpt=excerpt,
             project_dir=row["project_dir"],
             date=row["started_at"],
             rank=row["rank"],
+            chunk_index=row["chunk_index"],
         ))
     return results
 
