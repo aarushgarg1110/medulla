@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 
@@ -353,11 +354,15 @@ def _run_llm_pipeline(
         [f"[[entities/{s}]]" for s in session_entity_slugs if s]
     ) or "None — this is the only page being created this session."
 
-    # ── Stage 2: per-concept calls ────────────────────────────────────────────
+    # ── Stage 2: per-concept calls (parallel LLM, sequential writes) ─────────
+    # Workers do only the LLM call + parse (thread-safe).
+    # Main thread handles disk + DB writes as futures complete via as_completed
+    # so checkpoints print as each call finishes, not in a batch at the end.
     concept_slugs = []
-    for i, nc in enumerate(new_concepts, 1):
+
+    def _llm_concept(nc: dict, index: int) -> tuple[str, dict, int]:
         slug = _clean_slug(nc.get("slug") or slugify(nc.get("title", "unknown")))
-        concept_prompt = CONCEPT_PROMPT_TEMPLATE.format(
+        prompt = CONCEPT_PROMPT_TEMPLATE.format(
             title=nc.get("title", slug),
             concept_slug=slug,
             brief=nc.get("brief", ""),
@@ -367,27 +372,34 @@ def _run_llm_pipeline(
             tag_vocabulary=tag_vocab,
             text=truncated_text[:8_000],
         )
-        concept_response = provider.generate(concept_prompt, system=PLAN_SYSTEM_PROMPT, on_token=on_token)
-        cp = _parse_llm_response(concept_response)
+        response = provider.generate(prompt, system=PLAN_SYSTEM_PROMPT, on_token=on_token)
+        cp = _parse_llm_response(response)
         cp["title"] = cp.get("title") or nc.get("title", slug)
+        return slug, cp, index
 
-        path = write_concept_page(wiki_path, slug, cp, source_slug, scope)
-        upsert_wiki_page(conn, slug, "concept", cp.get("title", slug),
-                         path.read_text(), path, tags=cp.get("tags", []),
-                         sources=[source_slug], scope=scope)
-        update_index(wiki_path, slug, "concept", cp.get("title", slug),
-                     cp.get("definition", "")[:80])
-        concept_slugs.append(slug)
-        print(f"    ✓ {slug} ({i}/{n_concepts})")
+    with ThreadPoolExecutor(max_workers=min(len(new_concepts), 8) or 1) as executor:
+        futures = {executor.submit(_llm_concept, nc, i): nc
+                   for i, nc in enumerate(new_concepts, 1)}
+        for future in as_completed(futures):
+            slug, cp, idx = future.result()
+            path = write_concept_page(wiki_path, slug, cp, source_slug, scope)
+            upsert_wiki_page(conn, slug, "concept", cp.get("title", slug),
+                             path.read_text(), path, tags=cp.get("tags", []),
+                             sources=[source_slug], scope=scope)
+            update_index(wiki_path, slug, "concept", cp.get("title", slug),
+                         cp.get("definition", "")[:80])
+            concept_slugs.append(slug)
+            print(f"    ✓ {slug} ({idx}/{n_concepts})")
 
     if concept_slugs:
         schema = _build_wiki_schema(wiki_path)
 
-    # ── Stage 3: per-entity calls ─────────────────────────────────────────────
+    # ── Stage 3: per-entity calls (parallel, after all concepts finish) ───────
     entity_slugs = []
-    for i, ne in enumerate(new_entities, 1):
+
+    def _llm_entity(ne: dict, index: int) -> tuple[str, dict, int]:
         slug = _clean_slug(ne.get("slug") or slugify(ne.get("title", "unknown")))
-        entity_prompt = ENTITY_PROMPT_TEMPLATE.format(
+        prompt = ENTITY_PROMPT_TEMPLATE.format(
             title=ne.get("title", slug),
             entity_slug=slug,
             entity_type=ne.get("entity_type", "tool"),
@@ -398,18 +410,24 @@ def _run_llm_pipeline(
             tag_vocabulary=tag_vocab,
             text=truncated_text[:8_000],
         )
-        entity_response = provider.generate(entity_prompt, system=PLAN_SYSTEM_PROMPT, on_token=on_token)
-        ep = _parse_llm_response(entity_response)
+        response = provider.generate(prompt, system=PLAN_SYSTEM_PROMPT, on_token=on_token)
+        ep = _parse_llm_response(response)
         ep["title"] = ep.get("title") or ne.get("title", slug)
+        return slug, ep, index
 
-        path = write_entity_page(wiki_path, slug, ep, source_slug, scope)
-        upsert_wiki_page(conn, slug, "entity", ep.get("title", slug),
-                         path.read_text(), path, tags=ep.get("tags", []),
-                         sources=[source_slug], scope=scope)
-        update_index(wiki_path, slug, "entity", ep.get("title", slug),
-                     ep.get("who_what", "")[:80])
-        entity_slugs.append(slug)
-        print(f"    ✓ {slug} ({i}/{n_entities})")
+    with ThreadPoolExecutor(max_workers=min(len(new_entities), 8) or 1) as executor:
+        futures = {executor.submit(_llm_entity, ne, i): ne
+                   for i, ne in enumerate(new_entities, 1)}
+        for future in as_completed(futures):
+            slug, ep, idx = future.result()
+            path = write_entity_page(wiki_path, slug, ep, source_slug, scope)
+            upsert_wiki_page(conn, slug, "entity", ep.get("title", slug),
+                             path.read_text(), path, tags=ep.get("tags", []),
+                             sources=[source_slug], scope=scope)
+            update_index(wiki_path, slug, "entity", ep.get("title", slug),
+                         ep.get("who_what", "")[:80])
+            entity_slugs.append(slug)
+            print(f"    ✓ {slug} ({idx}/{n_entities})")
 
     # ── Stage 4: update existing pages (no LLM call needed) ──────────────────
     updated_concepts = []
