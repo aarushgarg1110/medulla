@@ -206,3 +206,60 @@ def test_search_across_multiple_sessions(db):
     assert "sess-a" in ids
     assert "sess-c" in ids
     assert "sess-b" not in ids
+
+
+# ── chunk_index field ──────────────────────────────────────────────────────────
+
+def test_chunk_result_has_chunk_index(db):
+    """chunk results must expose chunk_index as an integer, not embedded in title."""
+    _insert(db, "sess-ci", ["unique-chunk-term content"] * 25)
+    results = search(db, "unique-chunk-term")
+    chunk_results = [r for r in results if r.result_type == "chunk"]
+    assert len(chunk_results) > 0
+    for r in chunk_results:
+        assert r.chunk_index is not None
+        assert isinstance(r.chunk_index, int)
+
+
+def test_session_result_has_no_chunk_index(db):
+    """session-level results have chunk_index=None."""
+    _insert(db, "sess-si", ["short-session-term"])
+    results = search(db, "short-session-term")
+    session_results = [r for r in results if r.result_type == "session"]
+    for r in session_results:
+        assert r.chunk_index is None
+
+
+def test_wiki_result_has_no_chunk_index(db):
+    """wiki_page results have chunk_index=None."""
+    from medulla.semantic.store import upsert_wiki_page
+    upsert_wiki_page(db, "wiki-ci-test", "concept", "Wiki CI Test",
+                     "unique-wiki-chunk-term definition here.",
+                     __import__("pathlib").Path("/wiki/concepts/wiki-ci-test.md"))
+    results = search(db, "unique-wiki-chunk-term", layer="semantic")
+    assert len(results) > 0
+    for r in results:
+        assert r.chunk_index is None
+
+
+def test_chunk_index_is_not_always_zero(db):
+    """chunk_index reflects the actual matched chunk, not always 0."""
+    # 25 messages → multiple chunks; last chunk contains unique term
+    messages = [f"filler content message number {i}" for i in range(24)]
+    messages.append("late-chunk-unique-marker at the end of session")
+    _insert(db, "sess-late", messages)
+    results = search(db, "late-chunk-unique-marker")
+    chunk_results = [r for r in results if r.result_type == "chunk" and r.id == "sess-late"]
+    assert len(chunk_results) > 0
+    # The match is in a later chunk — chunk_index should be > 0
+    assert any(r.chunk_index > 0 for r in chunk_results)
+
+
+def test_chunk_title_no_longer_embeds_chunk_index(db):
+    """Title is clean session ID prefix only — chunk_index is a dedicated field now."""
+    _insert(db, "sess-title", ["title-test-term content"] * 25)
+    results = search(db, "title-test-term")
+    chunk_results = [r for r in results if r.result_type == "chunk"]
+    assert len(chunk_results) > 0
+    for r in chunk_results:
+        assert "chunk" not in r.title

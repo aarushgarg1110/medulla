@@ -75,6 +75,27 @@ def test_tool_search_assistant_content_findable(db):
     assert "sess-mcp" in result
 
 
+def test_tool_search_chunk_result_includes_chunk_index_hint(db):
+    """MCP output for chunk results must include chunk_index so model jumps directly."""
+    s = make_session("sess-mcp-ci", messages=["mcp-chunk-index-term content"] * 25)
+    upsert_session(db, s)
+    result = _tool_search(db, {"query": "mcp-chunk-index-term"})
+    assert "chunk_index=" in result
+    assert "medulla_session_detail" in result
+
+
+def test_tool_search_wiki_result_no_chunk_index_hint(db):
+    """Wiki results surfaced via medulla_search must not show a chunk_index hint."""
+    from medulla.semantic.store import upsert_wiki_page
+    import pathlib
+    upsert_wiki_page(db, "mcp-ci-wiki", "concept", "MCP CI Wiki",
+                     "mcp-no-chunk-hint-term definition here.",
+                     pathlib.Path("/wiki/concepts/mcp-ci-wiki.md"))
+    result = _tool_search(db, {"query": "mcp-no-chunk-hint-term", "layer": "semantic"})
+    assert "mcp-ci-w" in result  # slug truncated to 8 chars in output
+    assert "chunk_index=" not in result
+
+
 # ── medulla_session_detail ─────────────────────────────────────────────────────
 
 def test_tool_session_detail_found(db):
