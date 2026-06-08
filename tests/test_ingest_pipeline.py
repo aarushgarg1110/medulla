@@ -728,3 +728,129 @@ def test_pipeline_enforces_plan_slug_consistency(db, tmp_path, mock_provider):
     assert "adam-optimizer-wrong" not in source_content
     # The concept page was created under the plan slug
     assert (wiki / "concepts" / "adam-optimizer.md").exists()
+
+
+# ── concept/entity discrimination (#15) ───────────────────────────────────────
+
+class AuthorEntityProvider:
+    """Plan that returns author-type people in new_entities and authors in source_page."""
+
+    @property
+    def name(self): return "mock"
+    @property
+    def model(self): return "mock-model"
+
+    def generate(self, prompt: str, system=None, on_token=None) -> str:
+        import json
+        if "STAGE: CONCEPT" in prompt:
+            return json.dumps({
+                "slug": "ivive", "title": "IVIVE", "tags": ["pharmacokinetics"],
+                "definition": "d", "how_it_works": "h", "why_it_matters": "w",
+                "nuances": "n", "evidence": "e", "connections": [], "open_questions": [],
+            })
+        if "STAGE: ENTITY" in prompt:
+            return json.dumps({
+                "slug": "chemeleon", "title": "CheMeleon", "entity_type": "tool",
+                "tags": ["gnn"], "who_what": "w", "relevance": "r",
+                "contributions": [], "connections": [],
+            })
+        # STAGE: PLAN — author in new_entities, tool entity also present
+        return json.dumps({
+            "source_page": {
+                "title": "Clearance Model Study",
+                "summary": "s", "key_points": [], "tags": [],
+                "authors": ["Cynthia Xu", "Pat Walters"],
+                "concepts": ["[[concepts/ivive]] — core concept"],
+                "entities": ["[[entities/chemeleon]] — model used"],
+                "connections": [], "gaps": [],
+            },
+            "new_concepts": [
+                {"slug": "ivive", "title": "IVIVE", "brief": "in vitro to in vivo scaling"},
+            ],
+            "new_entities": [
+                {"slug": "chemeleon", "title": "CheMeleon",
+                 "entity_type": "tool", "brief": "GNN model"},
+                {"slug": "cynthia-xu", "title": "Cynthia Xu",
+                 "entity_type": "person", "brief": "co-author"},
+                {"slug": "pat-walters", "title": "Pat Walters",
+                 "entity_type": "person", "brief": "co-author"},
+            ],
+            "update_concepts": [],
+            "update_entities": [],
+        })
+
+
+def test_author_entities_not_written_as_pages(db, tmp_path):
+    """Person entities listed in source_page.authors must not produce entity wiki pages."""
+    wiki = tmp_path / "wiki"
+    md = tmp_path / "paper.md"
+    md.write_text("# Clearance Model Study\n\nContent about IVIVE.")
+    from medulla.semantic.ingest import intake_to_raw, process_pending
+    intake_to_raw(db, wiki, str(md))
+    process_pending(wiki, db, AuthorEntityProvider())
+    assert not (wiki / "entities" / "cynthia-xu.md").exists()
+    assert not (wiki / "entities" / "pat-walters.md").exists()
+
+
+def test_tool_entities_still_written(db, tmp_path):
+    """Non-person entities must still be written even when author filtering is active."""
+    wiki = tmp_path / "wiki"
+    md = tmp_path / "paper.md"
+    md.write_text("# Clearance Model Study\n\nContent about IVIVE.")
+    from medulla.semantic.ingest import intake_to_raw, process_pending
+    intake_to_raw(db, wiki, str(md))
+    process_pending(wiki, db, AuthorEntityProvider())
+    assert (wiki / "entities" / "chemeleon.md").exists()
+
+
+def test_authors_written_to_source_frontmatter(db, tmp_path):
+    """Authors from source_page.authors must appear in the source page frontmatter."""
+    wiki = tmp_path / "wiki"
+    md = tmp_path / "paper.md"
+    md.write_text("# Clearance Model Study\n\nContent about IVIVE.")
+    from medulla.semantic.ingest import intake_to_raw, process_pending
+    intake_to_raw(db, wiki, str(md))
+    results = process_pending(wiki, db, AuthorEntityProvider())
+    source_slug = results[0]["source"]
+    source_content = (wiki / "sources" / f"{source_slug}.md").read_text()
+    assert "Cynthia Xu" in source_content
+    assert "Pat Walters" in source_content
+    assert "authors:" in source_content
+
+
+def test_author_entities_not_in_db(db, tmp_path):
+    """Author-only person entities must not appear in wiki_pages DB."""
+    wiki = tmp_path / "wiki"
+    md = tmp_path / "paper.md"
+    md.write_text("# Clearance Model Study\n\nContent about IVIVE.")
+    from medulla.semantic.ingest import intake_to_raw, process_pending
+    intake_to_raw(db, wiki, str(md))
+    process_pending(wiki, db, AuthorEntityProvider())
+    slugs = {r[0] for r in db.execute("SELECT slug FROM wiki_pages").fetchall()}
+    assert "cynthia-xu" not in slugs
+    assert "pat-walters" not in slugs
+
+
+def test_plan_prompt_contains_information_gain_rule():
+    """PLAN_PROMPT_TEMPLATE must contain the source-specificity selectivity rule."""
+    from medulla.semantic.wiki import PLAN_PROMPT_TEMPLATE
+    assert "source-specific" in PLAN_PROMPT_TEMPLATE.lower() or \
+           "general knowledge" in PLAN_PROMPT_TEMPLATE.lower()
+
+
+def test_plan_prompt_contains_author_routing_rule():
+    """PLAN_PROMPT_TEMPLATE must instruct routing authors to source_page.authors."""
+    from medulla.semantic.wiki import PLAN_PROMPT_TEMPLATE
+    assert "authors" in PLAN_PROMPT_TEMPLATE.lower()
+
+
+def test_plan_prompt_schema_includes_authors_field():
+    """PLAN_PROMPT_TEMPLATE JSON schema must include authors field on source_page."""
+    from medulla.semantic.wiki import PLAN_PROMPT_TEMPLATE
+    assert '"authors"' in PLAN_PROMPT_TEMPLATE
+
+
+def test_source_template_includes_authors_frontmatter():
+    """SOURCE_TEMPLATE must include an authors: frontmatter field."""
+    from medulla.semantic.wiki import SOURCE_TEMPLATE
+    assert "authors:" in SOURCE_TEMPLATE

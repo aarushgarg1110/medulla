@@ -18,6 +18,7 @@ title: {title}
 source: {source}
 date_ingested: {date_ingested}
 tags: {tags}
+authors: {authors}
 ---
 
 ## Summary
@@ -152,11 +153,25 @@ Source text:
 ---
 
 Produce a JSON object with:
-1. source_page — complete source wiki page (title, summary, key_points, tags, concept/entity/connection/gap lists)
+1. source_page — complete source wiki page (title, summary, key_points, tags, authors, concept/entity/connection/gap lists)
 2. new_concepts — NEW concept page briefs (slugs NOT in the existing wiki schema above)
 3. new_entities — NEW entity page briefs (slugs NOT in the existing wiki schema above)
 4. update_concepts — existing concept slugs (from wiki schema) that this source adds to
 5. update_entities — existing entity slugs (from wiki schema) that this source adds to
+
+CONCEPT SELECTIVITY — only add to new_concepts if this source contributes novel, source-specific content:
+specific findings, a concrete implementation, empirical results, or a framing that wouldn't exist without this source.
+Ask yourself: would this wiki page contain anything a reader couldn't get from general knowledge alone?
+If no — omit it. Example of correct skip: "Python" or "API" in a paper that merely uses them.
+Example of correct include: a specific algorithm introduced by this paper, or a domain concept whose
+details come entirely from this source.
+
+ENTITY SELECTIVITY — apply the same source-specificity test as concepts.
+For people: default to omit. List authors and contributors in source_page.authors (plain name strings) instead.
+Only create a person entity page if the person is the PRIMARY SUBJECT of this source (biography, profile, interview)
+or their specific methodology is what you would independently look up across multiple sources.
+For tools, databases, orgs: create only if this source adds specific detail you would reference (architecture,
+benchmark results, known quirks) — not just a passing mention.
 
 CRITICAL CONSISTENCY RULE: The slugs in source_page.concepts and source_page.entities MUST exactly match the slugs in new_concepts and new_entities (plus update_concepts/update_entities from the schema).
 No other slugs may appear in source_page.concepts/entities.
@@ -169,6 +184,7 @@ This is enforced in code — mismatches will be silently corrected to match new_
     "summary": "2-4 paragraph synthesis of this source",
     "key_points": ["bullet 1", "bullet 2"],
     "tags": ["tag1", "tag2"],
+    "authors": ["Author Name 1", "Author Name 2"],
     "concepts": ["[[concepts/slug]] — one-line note on what this source adds"],
     "entities": ["[[entities/slug]] — role in this source"],
     "connections": ["[[sources/related-slug]] — how connected"],
@@ -357,11 +373,13 @@ def write_source_page(wiki_path: Path, slug: str, data: dict, source_ref: str, s
     sources_dir = wiki_path / "sources"
     sources_dir.mkdir(exist_ok=True)
     tags = _fmt_tags(data.get("tags", []))
+    authors = _fmt_list(data.get("authors", []))
     content = SOURCE_TEMPLATE.format(
         title=_yaml_title(data["title"]),
         source=source_ref,
         date_ingested=date.today().isoformat(),
         tags=tags,
+        authors=authors,
         summary=data.get("summary", ""),
         key_points=_fmt_bullets(data.get("key_points", [])),
         concepts=_fmt_bullets(data.get("concepts", [])),
