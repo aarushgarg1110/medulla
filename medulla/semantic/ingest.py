@@ -23,6 +23,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 
+_embedding_provider = None
+
+def _get_embedding_provider():
+    global _embedding_provider
+    if _embedding_provider is None:
+        from medulla.embeddings import get_embedding_provider
+        _embedding_provider = get_embedding_provider()
+    return _embedding_provider
+
+
 # ── Raw/ intake ───────────────────────────────────────────────────────────────
 
 def intake_to_raw(
@@ -131,11 +141,28 @@ def process_pending(
             mark_pending_done(conn, row["id"])
             result["source_path"] = row["source_path"]
             results.append(result)
+            _embed_new_wiki_pages(conn, result)
         except Exception as e:
             mark_pending_error(conn, row["id"], str(e))
             results.append({"source_path": row["source_path"], "error": str(e)})
 
     return results
+
+
+def _embed_new_wiki_pages(conn, result: dict) -> None:
+    """Embed all wiki pages created in this ingest result."""
+    try:
+        from medulla.db.embedding_store import get_wiki_pages_without_embeddings, upsert_wiki_embedding
+        provider = _get_embedding_provider()
+        missing = get_wiki_pages_without_embeddings(conn)
+        if not missing:
+            return
+        texts = [r["content"] for r in missing]
+        embeddings = provider.embed(texts)
+        for row, emb in zip(missing, embeddings):
+            upsert_wiki_embedding(conn, row["slug"], emb)
+    except Exception:
+        pass  # embedding failures must never break ingest
 
 
 def _process_raw_file(

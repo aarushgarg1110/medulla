@@ -10,6 +10,19 @@ from medulla.episodic.store import get_session_scanned_at, list_sessions
 from tests.conftest import claude_assistant, claude_user, make_claude_jsonl
 
 
+class _MockEmbedProvider:
+    dimension = 768
+    model_name = "mock"
+    def embed(self, texts):
+        return [[0.1] * self.dimension for _ in texts]
+
+
+@pytest.fixture(autouse=True)
+def patch_scanner_embeddings(monkeypatch):
+    import medulla.episodic.scanner as scanner_mod
+    monkeypatch.setattr(scanner_mod, "_get_embedding_provider", lambda: _MockEmbedProvider())
+
+
 def _write_session(root: Path, session_id: str, messages: list[str]) -> Path:
     """Write a minimal Claude session JSONL to root/<project>/<session_id>.jsonl."""
     proj = root / "my-project"

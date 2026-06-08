@@ -7,15 +7,26 @@ from medulla.cli import app
 runner = CliRunner()
 
 
+class _MockEmbedProvider:
+    dimension = 768
+    model_name = "mock"
+    def embed(self, texts):
+        return [[0.1] * self.dimension for _ in texts]
+
+
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path, monkeypatch):
     import medulla.config as cfg
+    import medulla.episodic.scanner as scanner_mod
+    import medulla.semantic.ingest as ingest_mod
     cfg._config = None
     test_cfg = cfg.Config(medulla_dir=tmp_path / ".medulla")
     monkeypatch.setattr(cfg, "_config", test_cfg)
     monkeypatch.setattr(cfg, "CONFIG_FILE", tmp_path / ".medulla" / "config.toml")
     monkeypatch.setattr("medulla.episodic.scanner.CLAUDE_PROJECTS_DIR", tmp_path / "none")
     monkeypatch.setattr("medulla.episodic.scanner.KIRO_SESSIONS_DIR", tmp_path / "none2")
+    monkeypatch.setattr(scanner_mod, "_get_embedding_provider", lambda: _MockEmbedProvider())
+    monkeypatch.setattr(ingest_mod, "_get_embedding_provider", lambda: _MockEmbedProvider())
     yield
 
 

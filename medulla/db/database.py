@@ -18,8 +18,20 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA cache_size=-8000")  # 8MB page cache
+    _load_sqlite_vec(conn)
     _run_migrations(conn)
     return conn
+
+
+def _load_sqlite_vec(conn: sqlite3.Connection) -> None:
+    """Load the sqlite-vec extension for vector storage and similarity search."""
+    try:
+        import sqlite_vec
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+    except Exception:
+        pass  # sqlite-vec unavailable — vec_* tables won't exist, embeddings disabled
 
 
 def _run_migrations(conn: sqlite3.Connection) -> None:
