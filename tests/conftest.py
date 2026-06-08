@@ -9,6 +9,28 @@ import pytest
 from medulla.db.database import connect
 
 
+class _MockSearchEmbedProvider:
+    """Global mock embedding provider — prevents real model load in any test."""
+    dimension = 768
+    model_name = "mock"
+    def embed(self, texts):
+        results = []
+        for text in texts:
+            seed = abs(hash(text)) % 1000
+            vec = [(seed + i) / (1000.0 * 10) for i in range(self.dimension)]
+            norm = sum(v**2 for v in vec) ** 0.5
+            results.append([v / norm for v in vec])
+        return results
+
+
+@pytest.fixture(autouse=True)
+def patch_search_provider(monkeypatch):
+    """Patch search._get_search_embedding_provider globally so no test loads torch."""
+    import medulla.search as search_mod
+    monkeypatch.setattr(search_mod, "_get_search_embedding_provider",
+                        lambda: _MockSearchEmbedProvider())
+
+
 @pytest.fixture
 def db(tmp_path):
     """In-memory-style SQLite DB (file in tmp_path so migrations work cleanly)."""

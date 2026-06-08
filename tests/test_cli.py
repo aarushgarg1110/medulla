@@ -92,11 +92,19 @@ def test_search_command_finds_result(claude_projects):
     assert len(result.output.strip()) > 0
 
 
-def test_search_command_no_results(claude_projects):
+def test_search_command_no_results_bm25_only(claude_projects):
+    """BM25-only returns no results for nonsense query."""
     runner.invoke(app, ["scan"])
-    result = runner.invoke(app, ["search", "zzznomatch9999"])
+    result = runner.invoke(app, ["search", "zzznomatch9999", "--bm25-only"])
     assert result.exit_code == 0
     assert "No results" in result.output
+
+
+def test_search_command_hybrid_returns_results_for_unknown_terms(claude_projects):
+    """Hybrid search returns closest semantic results even for unknown terms."""
+    runner.invoke(app, ["scan"])
+    result = runner.invoke(app, ["search", "zzznomatch9999"])
+    assert result.exit_code == 0  # no crash — vector fallback kicks in
 
 
 def test_search_command_limit_flag(claude_projects):

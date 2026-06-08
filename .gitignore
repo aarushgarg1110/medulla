@@ -21,8 +21,9 @@ htmlcov/
 # uv / python version pin (note: .python-version IS committed — pins to 3.12 for Zscaler SSL compat)
 sanity-output/
 
-# Personal learning notes (not for publish)
+# Notes and reflections
 notes/
+reflections/
 
 # Claude Code local config + instructions (personal, not for publish)
 .claude/
