@@ -42,13 +42,14 @@ def search(
     query: Annotated[str, typer.Argument(help="Search query")],
     limit: Annotated[int, typer.Option("--limit", "-n")] = 10,
     layer: Annotated[Optional[str], typer.Option("--layer", help="episodic | semantic | code")] = None,
+    bm25_only: Annotated[bool, typer.Option("--bm25-only", help="Force keyword-only search, skip vector reranking")] = False,
 ):
-    """Search across all memory layers."""
+    """Search across all memory layers. Uses hybrid BM25+vector search when embeddings exist."""
     from medulla.db.database import connect
     from medulla.search import search as do_search
 
     conn = connect()
-    results = do_search(conn, query, limit=limit, layer=layer)
+    results = do_search(conn, query, limit=limit, layer=layer, bm25_only=bm25_only)
 
     if not results:
         console.print("[yellow]No results found.[/yellow]")

@@ -33,13 +33,14 @@ _server = Server("medulla")
 _TOOLS = [
     types.Tool(
         name="medulla_search",
-        description="Search past Claude/Kiro sessions and wiki pages by keyword. Returns matched excerpts with session ID, date, and project.",
+        description="Search past Claude/Kiro sessions and wiki pages. Uses hybrid BM25+vector search when embeddings exist, falls back to keyword search otherwise.",
         inputSchema={
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Search terms"},
                 "limit": {"type": "integer", "default": 10},
                 "layer": {"type": "string", "enum": ["episodic", "semantic", "code"], "description": "Restrict to a single layer (omit for all)"},
+                "bm25_only": {"type": "boolean", "default": False, "description": "Force keyword-only search, skip vector reranking"},
             },
             "required": ["query"],
         },
@@ -305,6 +306,7 @@ def _tool_search(conn, args: dict) -> str:
         conn, query,
         limit=args.get("limit", 10),
         layer=args.get("layer"),
+        bm25_only=args.get("bm25_only", False),
     )
     if not results:
         return f"No results found for: {query}"

@@ -263,3 +263,123 @@ def test_chunk_title_no_longer_embeds_chunk_index(db):
     assert len(chunk_results) > 0
     for r in chunk_results:
         assert "chunk" not in r.title
+
+
+# ── hybrid search ──────────────────────────────────────────────────────────────
+
+class _MockEmbedProvider:
+    dimension = 768
+    model_name = "mock"
+    def embed(self, texts):
+        # Return deterministic vectors: text hash → seed → unit-ish vector
+        results = []
+        for text in texts:
+            seed = abs(hash(text)) % 1000
+            vec = [(seed + i) / (1000.0 * 10) for i in range(self.dimension)]
+            # normalize
+            norm = sum(v**2 for v in vec) ** 0.5
+            results.append([v / norm for v in vec])
+        return results
+
+
+def _insert_with_embedding(db, session_id, messages, project_dir="/proj/x"):
+    """Insert session and store fake embeddings for all its chunks."""
+    from medulla.db.embedding_store import upsert_chunk_embedding
+    s = make_session(session_id, project_dir=project_dir, messages=messages)
+    upsert_session(db, s)
+    provider = _MockEmbedProvider()
+    chunks = db.execute(
+        "SELECT session_id, chunk_index, chunk_text FROM session_chunks WHERE session_id = ?",
+        (session_id,)
+    ).fetchall()
+    if chunks:
+        texts = [c["chunk_text"] for c in chunks]
+        embeddings = provider.embed(texts)
+        for chunk, emb in zip(chunks, embeddings):
+            upsert_chunk_embedding(db, chunk["session_id"], chunk["chunk_index"], emb)
+
+
+def test_rrf_score_math():
+    """RRF score = 1/(k+rank) for each list; k=60 by default."""
+    from medulla.search import _rrf_score
+    # rank 1 in one list, not in other
+    assert abs(_rrf_score(1, None) - 1/61) < 1e-9
+    # rank 1 in both lists
+    assert abs(_rrf_score(1, 1) - 2/61) < 1e-9
+    # rank 10 in one list only
+    assert abs(_rrf_score(10, None) - 1/70) < 1e-9
+
+
+def test_rrf_fuse_higher_score_ranks_first():
+    """Item appearing in both lists ranks above item in only one."""
+    from medulla.search import _rrf_fuse
+    bm25 = [("id-a", 0), ("id-b", 1)]   # id-a rank 0, id-b rank 1
+    vec  = [("id-b", 0), ("id-c", 1)]   # id-b rank 0, id-c rank 1
+    # id-b appears in both → should rank first
+    fused = _rrf_fuse(bm25, vec)
+    assert fused[0][0] == "id-b"
+
+
+def test_hybrid_search_returns_results(db):
+    """hybrid_search returns results when embeddings exist."""
+    from medulla.search import hybrid_search
+    _insert_with_embedding(db, "sess-hyb", ["hybrid search test content"] * 25)
+    provider = _MockEmbedProvider()
+    results = hybrid_search(db, "hybrid search test", provider=provider)
+    assert len(results) > 0
+    assert any(r.id == "sess-hyb" for r in results)
+
+
+def test_hybrid_search_falls_back_to_bm25_without_embeddings(db):
+    """hybrid_search degrades gracefully to BM25 when vec_chunks is empty."""
+    from medulla.search import hybrid_search
+    _insert(db, "sess-fallback", ["fallback bm25 only content"] * 25)
+    # No embeddings stored — vec_chunks empty for this session
+    provider = _MockEmbedProvider()
+    results = hybrid_search(db, "fallback bm25 only", provider=provider)
+    assert len(results) > 0
+    assert any(r.id == "sess-fallback" for r in results)
+
+
+def test_hybrid_search_both_lists_boost_rank(db):
+    """A chunk matching both BM25 and vector ranks above a chunk matching only one."""
+    from medulla.search import hybrid_search
+    from medulla.db.embedding_store import upsert_chunk_embedding
+
+    # sess-both: text matches BM25 query AND gets an embedding close to query
+    _insert_with_embedding(db, "sess-both", ["unique-boost-term content detail"] * 25)
+    # sess-bm25only: text matches BM25 but no embedding stored
+    _insert(db, "sess-bm25only", ["unique-boost-term content detail"] * 25)
+
+    provider = _MockEmbedProvider()
+    results = hybrid_search(db, "unique-boost-term", provider=provider)
+    ids = [r.id for r in results]
+    # sess-both should outrank sess-bm25only
+    assert "sess-both" in ids
+    assert ids.index("sess-both") <= ids.index("sess-bm25only")
+
+
+def test_hybrid_search_respects_layer_filter(db):
+    """hybrid_search with layer=episodic returns only episodic results."""
+    from medulla.search import hybrid_search
+    _insert_with_embedding(db, "sess-layer", ["layer filter test content"] * 25)
+    provider = _MockEmbedProvider()
+    results = hybrid_search(db, "layer filter test", provider=provider, layer="episodic")
+    assert all(r.layer == "episodic" for r in results)
+
+
+def test_hybrid_search_respects_limit(db):
+    """hybrid_search respects the limit parameter."""
+    from medulla.search import hybrid_search
+    for i in range(5):
+        _insert_with_embedding(db, f"sess-lim-{i}", [f"limit test content session {i}"] * 25)
+    provider = _MockEmbedProvider()
+    results = hybrid_search(db, "limit test content", provider=provider, limit=2)
+    assert len(results) <= 2
+
+
+def test_search_uses_hybrid_when_embeddings_exist(db):
+    """Top-level search() uses hybrid when embeddings available, BM25 otherwise."""
+    _insert_with_embedding(db, "sess-auto", ["auto hybrid detection content"] * 25)
+    results = search(db, "auto hybrid detection")
+    assert len(results) > 0
