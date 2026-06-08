@@ -11,6 +11,13 @@ from tests.conftest import claude_user, make_claude_jsonl
 runner = CliRunner()
 
 
+class _MockEmbedProvider:
+    dimension = 768
+    model_name = "mock"
+    def embed(self, texts):
+        return [[0.1] * self.dimension for _ in texts]
+
+
 @pytest.fixture(autouse=True)
 def isolated_config(tmp_path, monkeypatch):
     """Point config at a tmp_path so tests don't touch ~/.medulla."""
@@ -18,12 +25,15 @@ def isolated_config(tmp_path, monkeypatch):
     medulla_dir.mkdir()
 
     import medulla.config as cfg_module
-    import medulla.db.database as db_module
+    import medulla.episodic.scanner as scanner_mod
+    import medulla.semantic.ingest as ingest_mod
 
     # Reset singleton so each test gets a fresh config
     cfg_module._config = None
 
     monkeypatch.setattr(cfg_module, "_config", cfg_module.Config(medulla_dir=medulla_dir))
+    monkeypatch.setattr(scanner_mod, "_get_embedding_provider", lambda: _MockEmbedProvider())
+    monkeypatch.setattr(ingest_mod, "_get_embedding_provider", lambda: _MockEmbedProvider())
     yield
 
 

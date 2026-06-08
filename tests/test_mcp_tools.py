@@ -16,13 +16,22 @@ from medulla.mcp import (  # noqa: E402
 from tests.test_store import make_session, make_agent
 
 
+class _MockEmbedProvider:
+    dimension = 768
+    model_name = "mock"
+    def embed(self, texts):
+        return [[0.1] * self.dimension for _ in texts]
+
+
 @pytest.fixture(autouse=True)
 def isolated_config(tmp_path, monkeypatch):
     """Ensure MCP tool tests never write to real ~/.medulla wiki dir."""
     import medulla.config as cfg
+    import medulla.semantic.ingest as ingest_mod
     cfg._config = None
     test_cfg = cfg.Config(medulla_dir=tmp_path / ".medulla")
     monkeypatch.setattr(cfg, "_config", test_cfg)
+    monkeypatch.setattr(ingest_mod, "_get_embedding_provider", lambda: _MockEmbedProvider())
     yield
     cfg._config = None
 

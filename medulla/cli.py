@@ -195,6 +195,63 @@ def session_detail(
         console.print(c["chunk_text"][:400])
 
 
+# ── embed ─────────────────────────────────────────────────────────────────────
+
+
+_embedding_provider = None
+
+def _get_embedding_provider():
+    global _embedding_provider
+    if _embedding_provider is None:
+        from medulla.embeddings import get_embedding_provider
+        _embedding_provider = get_embedding_provider()
+    return _embedding_provider
+
+
+@app.command()
+def embed(
+    force: Annotated[bool, typer.Option("--force", help="Re-embed already-embedded content")] = False,
+):
+    """Compute and store embeddings for all session chunks and wiki pages."""
+    from medulla.db.database import connect
+    from medulla.db.embedding_store import (
+        get_chunks_without_embeddings, upsert_chunk_embedding,
+        get_wiki_pages_without_embeddings, upsert_wiki_embedding,
+    )
+    conn = connect()
+    provider = _get_embedding_provider()
+
+    if force:
+        conn.execute("DELETE FROM vec_chunks")
+        conn.execute("DELETE FROM vec_wiki")
+        conn.commit()
+
+    # ── chunks ──────────────────────────────────────────────────────────────
+    missing_chunks = get_chunks_without_embeddings(conn)
+    if missing_chunks:
+        console.print(f"Embedding [cyan]{len(missing_chunks)}[/cyan] session chunks…")
+        texts = [r["chunk_text"] for r in missing_chunks]
+        embeddings = provider.embed(texts)
+        for row, emb in zip(missing_chunks, embeddings):
+            upsert_chunk_embedding(conn, row["session_id"], row["chunk_index"], emb)
+        console.print(f"  ✓ {len(missing_chunks)} chunks embedded")
+    else:
+        console.print("  ✓ 0 chunks to embed")
+
+    # ── wiki pages ───────────────────────────────────────────────────────────
+    missing_wiki = get_wiki_pages_without_embeddings(conn)
+    if missing_wiki:
+        console.print(f"Embedding [cyan]{len(missing_wiki)}[/cyan] wiki pages…")
+        console.print("  [dim]Downloading embedding model on first run (~400MB, cached after)…[/dim]")
+        texts = [r["content"] for r in missing_wiki]
+        embeddings = provider.embed(texts)
+        for row, emb in zip(missing_wiki, embeddings):
+            upsert_wiki_embedding(conn, row["slug"], emb)
+        console.print(f"  ✓ {len(missing_wiki)} wiki pages embedded")
+    else:
+        console.print("  ✓ 0 wiki pages to embed")
+
+
 # ── mcp ────────────────────────────────────────────────────────────────────────
 
 @app.command()

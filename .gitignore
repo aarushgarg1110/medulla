@@ -18,8 +18,7 @@ htmlcov/
 *.db-shm
 *.db-wal
 
-# uv / python version pin
-.python-version
+# uv / python version pin (note: .python-version IS committed — pins to 3.12 for Zscaler SSL compat)
 sanity-output/
 
 # Personal learning notes (not for publish)

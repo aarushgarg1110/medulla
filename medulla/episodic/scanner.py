@@ -13,6 +13,16 @@ from medulla.episodic.store import (
     get_session_scanned_at, get_agent_scanned_at,
 )
 
+
+_embedding_provider = None
+
+def _get_embedding_provider():
+    global _embedding_provider
+    if _embedding_provider is None:
+        from medulla.embeddings import get_embedding_provider
+        _embedding_provider = get_embedding_provider()
+    return _embedding_provider
+
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 KIRO_SESSIONS_DIR = Path.home() / ".kiro" / "sessions"
 
@@ -94,7 +104,25 @@ def _process_session(conn: sqlite3.Connection, path: Path, force: bool) -> str:
         return "skipped_empty"  # empty/stub/no-user-messages
 
     upsert_session(conn, session)
+    _embed_session_chunks(conn, session.session_id)
     return "indexed"
+
+
+def _embed_session_chunks(conn: sqlite3.Connection, session_id: str) -> None:
+    """Embed all chunks for a session that don't have embeddings yet."""
+    try:
+        from medulla.db.embedding_store import get_chunks_without_embeddings, upsert_chunk_embedding
+        provider = _get_embedding_provider()
+        missing = [r for r in get_chunks_without_embeddings(conn)
+                   if r["session_id"] == session_id]
+        if not missing:
+            return
+        texts = [r["chunk_text"] for r in missing]
+        embeddings = provider.embed(texts)
+        for row, emb in zip(missing, embeddings):
+            upsert_chunk_embedding(conn, row["session_id"], row["chunk_index"], emb)
+    except Exception:
+        pass  # embedding failures must never break indexing
 
 
 def _process_agent(conn: sqlite3.Connection, path: Path, force: bool) -> str:

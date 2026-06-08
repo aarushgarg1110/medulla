@@ -10,6 +10,22 @@ from medulla.semantic.ingest import (
 )
 
 
+class _MockEmbedProvider:
+    """Fake embedding provider — no model download, deterministic 768-dim vectors."""
+    dimension = 768
+    model_name = "mock"
+
+    def embed(self, texts):
+        return [[float(i % 100) / 100.0] * self.dimension for i, _ in enumerate(texts)]
+
+
+@pytest.fixture(autouse=True)
+def patch_ingest_embeddings(monkeypatch):
+    """Patch _get_embedding_provider in ingest.py so no real model is loaded."""
+    import medulla.semantic.ingest as ingest_mod
+    monkeypatch.setattr(ingest_mod, "_get_embedding_provider", lambda: _MockEmbedProvider())
+
+
 class MockProvider:
     """Test double implementing LLMProvider — returns realistic structured output.
 
