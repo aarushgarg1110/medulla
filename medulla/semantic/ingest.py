@@ -302,7 +302,28 @@ def _run_llm_pipeline(
     source_data.setdefault("tags", [])
 
     new_concepts = plan.get("new_concepts", [])
-    new_entities = plan.get("new_entities", [])
+
+    # Filter author-only person entities — route them to source_page.authors instead.
+    # A person entity is an author if their slug matches a slugified author name from
+    # source_page.authors. This enforces the prompt rule in code so a single LLM lapse
+    # doesn't silently create a useless person page.
+    author_slugs = {
+        slugify(name)
+        for name in source_data.get("authors", [])
+        if name
+    }
+    new_entities_raw = plan.get("new_entities", [])
+    new_entities = [
+        ne for ne in new_entities_raw
+        if not (ne.get("entity_type") == "person"
+                and _clean_slug(ne.get("slug", "")) in author_slugs)
+    ]
+    skipped_authors = [
+        ne["slug"] for ne in new_entities_raw if ne not in new_entities
+    ]
+    if skipped_authors:
+        print(f"  ↷ Skipped author entities (added to source authors): {', '.join(skipped_authors)}")
+
     n_concepts = len(new_concepts)
     n_entities = len(new_entities)
     n_updates = len(plan.get("update_concepts", [])) + len(plan.get("update_entities", []))
