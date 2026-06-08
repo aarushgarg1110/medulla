@@ -212,6 +212,7 @@ def _get_embedding_provider():
 @app.command()
 def embed(
     force: Annotated[bool, typer.Option("--force", help="Re-embed already-embedded content")] = False,
+    reindex_edges: Annotated[bool, typer.Option("--reindex-edges", help="Recompute related: wikilinks for all wiki pages from cosine similarity")] = False,
 ):
     """Compute and store embeddings for all session chunks and wiki pages."""
     from medulla.db.database import connect
@@ -251,6 +252,13 @@ def embed(
         console.print(f"  ✓ {len(missing_wiki)} wiki pages embedded")
     else:
         console.print("  ✓ 0 wiki pages to embed")
+
+    # ── reindex edges ────────────────────────────────────────────────────────
+    if reindex_edges:
+        from medulla.semantic.wiki import reindex_wiki_edges
+        console.print("Reindexing [cyan]related:[/cyan] wikilinks from cosine similarity…")
+        updated = reindex_wiki_edges(conn, top_k=5)
+        console.print(f"  ✓ {updated} wiki pages updated with related: edges")
 
 
 # ── mcp ────────────────────────────────────────────────────────────────────────
