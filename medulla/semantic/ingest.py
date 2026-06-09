@@ -629,6 +629,7 @@ def store_wiki_page(
     append_log(wiki_path, "ingest", title, "Stored via medulla_ingest MCP tool")
 
     broken = _check_wikilinks(wiki_path, [page_path])
+    _embed_new_wiki_pages(conn, {})
     return {"slug": slug, "type": page_type, "path": str(page_path), "broken_wikilinks": broken}
 
 

@@ -256,6 +256,15 @@ _TOOLS = [
             },
         },
     ),
+    types.Tool(
+        name="medulla_reindex_edges",
+        description=(
+            "Recompute cosine-similarity related: wikilinks for all embedded wiki pages. "
+            "Call this after a batch of medulla_ingest calls to wire up semantic connections "
+            "between all newly created pages. Returns count of pages updated."
+        ),
+        inputSchema={"type": "object", "properties": {}},
+    ),
 ]
 
 
@@ -287,6 +296,7 @@ _HANDLERS: dict[str, Any] = {
     "medulla_ingest_url": lambda conn, args: _tool_ingest_url(conn, args),
     "medulla_list_raw": lambda conn, args: _tool_list_raw(conn, args),
     "medulla_analyze": lambda conn, args: _tool_analyze(conn, args),
+    "medulla_reindex_edges": lambda conn, args: _tool_reindex_edges(conn, args),
 }
 
 
@@ -624,6 +634,14 @@ def _tool_analyze(conn, args: dict) -> str:
         )
     # Future: compute retry/help/error rates per manifest_key
     return f"tool_events count: {count}. Full manifest quality analysis coming in Sprint 5."
+
+
+def _tool_reindex_edges(conn, args: dict) -> str:
+    from medulla.config import get_config
+    from medulla.semantic.wiki import reindex_wiki_edges
+    wiki_path = get_config().wiki_path
+    updated = reindex_wiki_edges(conn, top_k=5)
+    return f"Reindexed related: edges for {updated} wiki pages."
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
