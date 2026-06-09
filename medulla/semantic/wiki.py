@@ -51,6 +51,7 @@ CONCEPT_TEMPLATE = """\
 title: {title}
 tags: {tags}
 sources: {sources}
+related: {related}
 ---
 
 ## Definition
@@ -88,6 +89,7 @@ title: {title}
 type: {entity_type}
 tags: {tags}
 sources: {sources}
+related: {related}
 ---
 
 ## Who / What
@@ -405,10 +407,12 @@ def write_concept_page(wiki_path: Path, slug: str, data: dict, source_slug: str,
             existing_sources = [s.strip().strip('"').strip("'") for s in m.group(1).split(",")]
     sources = list(dict.fromkeys(existing_sources + [source_slug]))
     tags = _fmt_tags(data.get("tags", []))
+    related = _fmt_list(data.get("related", []))
     content = CONCEPT_TEMPLATE.format(
         title=_yaml_title(data["title"]),
         tags=tags,
         sources=_fmt_list(sources),
+        related=related,
         definition=data.get("definition", ""),
         how_it_works=data.get("how_it_works", ""),
         why_it_matters=data.get("why_it_matters", ""),
@@ -433,11 +437,13 @@ def write_entity_page(wiki_path: Path, slug: str, data: dict, source_slug: str, 
             existing_sources = [s.strip().strip('"').strip("'") for s in m.group(1).split(",")]
     sources = list(dict.fromkeys(existing_sources + [source_slug]))
     tags = _fmt_tags(data.get("tags", []))
+    related = _fmt_list(data.get("related", []))
     content = ENTITY_TEMPLATE.format(
         title=_yaml_title(data["title"]),
         entity_type=data.get("entity_type", "tool"),
         tags=tags,
         sources=_fmt_list(sources),
+        related=related,
         who_what=data.get("who_what", ""),
         relevance=data.get("relevance", ""),
         contributions=_fmt_bullets(data.get("contributions", [])),
@@ -590,3 +596,75 @@ def _fmt_list(items: list[str]) -> str:
     if not items:
         return "[]"
     return "[" + ", ".join(f'"{i}"' for i in items) + "]"
+
+
+# ── cosine wikilink edges ──────────────────────────────────────────────────────
+
+def _compute_related_slugs(
+    conn,
+    slug: str,
+    top_k: int = 5,
+) -> list[str]:
+    """Return top-k cosine-similar wiki page slugs as [[folder/slug]] wikilinks.
+
+    Excludes the page itself. Returns empty list if no embeddings exist.
+    """
+    try:
+        from medulla.db.embedding_store import get_wiki_embedding, find_similar_wiki_pages
+        embedding = get_wiki_embedding(conn, slug)
+        if embedding is None:
+            return []
+        page_type = conn.execute(
+            "SELECT type FROM wiki_pages WHERE slug = ?", (slug,)
+        ).fetchone()
+        folder = {"concept": "concepts", "entity": "entities", "source": "sources"}.get(
+            page_type["type"] if page_type else "concept", "concepts"
+        )
+        _folder = {"concept": "concepts", "entity": "entities", "source": "sources"}
+        hits = find_similar_wiki_pages(conn, embedding, top_k=top_k + 1)
+        return [
+            f"[[{_folder.get(h['type'], 'concepts')}/{h['slug']}]]"
+            for h in hits
+            if h["slug"] != slug
+        ][:top_k]
+    except Exception:
+        return []
+
+
+def _update_related_frontmatter(path: "Path", related: list[str]) -> None:
+    """Rewrite just the related: line in a wiki page's frontmatter."""
+    import re as _re
+    content = path.read_text()
+    new_related = _fmt_list(related)
+    if _re.search(r"^related:", content, _re.MULTILINE):
+        content = _re.sub(
+            r"^related:.*$", f"related: {new_related}", content, flags=_re.MULTILINE
+        )
+    else:
+        # Insert after sources: line
+        content = _re.sub(
+            r"^(sources:.*$)", rf"\1\nrelated: {new_related}", content, flags=_re.MULTILINE
+        )
+    path.write_text(content)
+
+
+def reindex_wiki_edges(conn, wiki_path: "Path | None" = None, top_k: int = 5) -> int:
+    """Recompute related: for all embedded wiki pages. Returns count of pages updated.
+
+    wiki_path is unused (file paths come from DB); kept for API compatibility.
+    """
+    from pathlib import Path as _Path
+    rows = conn.execute(
+        "SELECT slug, type, file_path FROM wiki_pages"
+    ).fetchall()
+    updated = 0
+    for row in rows:
+        slug = row["slug"]
+        file_path = _Path(row["file_path"]) if row["file_path"] else None
+        if file_path is None or not file_path.exists():
+            continue
+        related = _compute_related_slugs(conn, slug, top_k=top_k)
+        if related:
+            _update_related_frontmatter(file_path, related)
+            updated += 1
+    return updated

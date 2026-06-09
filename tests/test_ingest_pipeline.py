@@ -870,3 +870,119 @@ def test_source_template_includes_authors_frontmatter():
     """SOURCE_TEMPLATE must include an authors: frontmatter field."""
     from medulla.semantic.wiki import SOURCE_TEMPLATE
     assert "authors:" in SOURCE_TEMPLATE
+
+
+# ── cosine wikilink edges (#21) ────────────────────────────────────────────────
+
+def test_concept_template_has_related_field():
+    """CONCEPT_TEMPLATE must include related: frontmatter field."""
+    from medulla.semantic.wiki import CONCEPT_TEMPLATE
+    assert "related:" in CONCEPT_TEMPLATE
+
+
+def test_entity_template_has_related_field():
+    """ENTITY_TEMPLATE must include related: frontmatter field."""
+    from medulla.semantic.wiki import ENTITY_TEMPLATE
+    assert "related:" in ENTITY_TEMPLATE
+
+
+def test_write_concept_page_renders_related(db, tmp_path, mock_provider):
+    """write_concept_page writes related: field from data['related']."""
+    from medulla.semantic.wiki import write_concept_page
+    wiki = tmp_path / "wiki"
+    wiki.mkdir(parents=True, exist_ok=True)
+    data = {
+        "title": "Test Concept",
+        "tags": ["ml"],
+        "definition": "d", "how_it_works": "h", "why_it_matters": "w",
+        "nuances": "n", "evidence": "e", "connections": [], "open_questions": [],
+        "related": ["[[concepts/rmsprop]]", "[[concepts/adagrad]]"],
+    }
+    path = write_concept_page(wiki, "test-concept", data, "source-slug")
+    content = path.read_text()
+    assert "related:" in content
+    assert "[[concepts/rmsprop]]" in content
+    assert "[[concepts/adagrad]]" in content
+
+
+def test_write_concept_page_empty_related(db, tmp_path, mock_provider):
+    """write_concept_page with no related writes related: [] cleanly."""
+    from medulla.semantic.wiki import write_concept_page
+    wiki = tmp_path / "wiki"
+    wiki.mkdir(parents=True, exist_ok=True)
+    data = {
+        "title": "Test Concept", "tags": [],
+        "definition": "d", "how_it_works": "h", "why_it_matters": "w",
+        "nuances": "n", "evidence": "e", "connections": [], "open_questions": [],
+    }
+    path = write_concept_page(wiki, "test-concept", data, "source-slug")
+    content = path.read_text()
+    assert "related:" in content
+
+
+def test_compute_related_slugs_returns_neighbors(db, tmp_path):
+    """_compute_related_slugs returns cosine-similar wiki page slugs."""
+    from medulla.semantic.wiki import _compute_related_slugs
+    from medulla.db.embedding_store import upsert_wiki_embedding
+    from medulla.semantic.store import upsert_wiki_page
+
+    # Insert two similar pages and one dissimilar
+    dim = 768
+    close = [1.0] + [0.0] * (dim - 1)
+    far   = [0.0] + [1.0] + [0.0] * (dim - 2)
+    target= [0.9] + [0.1] + [0.0] * (dim - 2)  # close to 'close'
+
+    for slug, emb in [("close-concept", close), ("far-concept", far), ("target-concept", target)]:
+        upsert_wiki_page(db, slug, "concept", slug.title(),
+                         "content.", Path(f"/wiki/concepts/{slug}.md"))
+        upsert_wiki_embedding(db, slug, emb)
+
+    # top_k=1: only the single nearest neighbor
+    related = _compute_related_slugs(db, "target-concept", top_k=1)
+    slugs = [r.split("/")[-1].rstrip("]]") for r in related]
+    assert len(related) == 1
+    assert "close-concept" in slugs
+
+
+def test_compute_related_excludes_self(db, tmp_path):
+    """_compute_related_slugs never returns the page itself."""
+    from medulla.semantic.wiki import _compute_related_slugs
+    from medulla.db.embedding_store import upsert_wiki_embedding
+    from medulla.semantic.store import upsert_wiki_page
+
+    dim = 768
+    upsert_wiki_page(db, "self-concept", "concept", "Self",
+                     "content.", Path("/wiki/concepts/self-concept.md"))
+    upsert_wiki_embedding(db, "self-concept", [1.0] + [0.0] * (dim - 1))
+
+    related = _compute_related_slugs(db, "self-concept", top_k=5)
+    assert not any("self-concept" in r for r in related)
+
+
+def test_reindex_edges_updates_related_frontmatter(db, tmp_path):
+    """medulla embed --reindex-edges updates related: in wiki page files."""
+    from medulla.semantic.wiki import write_concept_page, _compute_related_slugs
+    from medulla.db.embedding_store import upsert_wiki_embedding
+    from medulla.semantic.store import upsert_wiki_page
+    import medulla.config as cfg
+
+    dim = 768
+    # Two similar concepts
+    for slug, emb in [
+        ("concept-a", [1.0] + [0.0] * (dim - 1)),
+        ("concept-b", [0.9] + [0.1] + [0.0] * (dim - 2)),
+    ]:
+        data = {"title": slug, "tags": [], "definition": "d", "how_it_works": "h",
+                "why_it_matters": "w", "nuances": "n", "evidence": "e",
+                "connections": [], "open_questions": []}
+        (tmp_path / "wiki").mkdir(parents=True, exist_ok=True)
+        path = write_concept_page(tmp_path / "wiki", slug, data, "src")
+        upsert_wiki_page(db, slug, "concept", slug.title(), path.read_text(), path)
+        upsert_wiki_embedding(db, slug, emb)
+
+    # Reindex edges
+    from medulla.semantic.wiki import reindex_wiki_edges
+    reindex_wiki_edges(db, tmp_path / "wiki", top_k=5)
+
+    content_a = (tmp_path / "wiki" / "concepts" / "concept-a.md").read_text()
+    assert "concept-b" in content_a

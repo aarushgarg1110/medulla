@@ -150,9 +150,11 @@ def process_pending(
 
 
 def _embed_new_wiki_pages(conn, result: dict) -> None:
-    """Embed all wiki pages created in this ingest result."""
+    """Embed all wiki pages created in this ingest result, then compute related: edges."""
     try:
         from medulla.db.embedding_store import get_wiki_pages_without_embeddings, upsert_wiki_embedding
+        from medulla.semantic.wiki import _compute_related_slugs, _update_related_frontmatter
+        from pathlib import Path
         provider = _get_embedding_provider()
         missing = get_wiki_pages_without_embeddings(conn)
         if not missing:
@@ -161,8 +163,19 @@ def _embed_new_wiki_pages(conn, result: dict) -> None:
         embeddings = provider.embed(texts)
         for row, emb in zip(missing, embeddings):
             upsert_wiki_embedding(conn, row["slug"], emb)
+        # Compute cosine-similarity related: edges for each newly embedded page
+        for row in missing:
+            related = _compute_related_slugs(conn, row["slug"], top_k=5)
+            if related:
+                file_row = conn.execute(
+                    "SELECT file_path FROM wiki_pages WHERE slug = ?", (row["slug"],)
+                ).fetchone()
+                if file_row and file_row["file_path"]:
+                    path = Path(file_row["file_path"])
+                    if path.exists():
+                        _update_related_frontmatter(path, related)
     except Exception:
-        pass  # embedding failures must never break ingest
+        pass  # embedding/edge failures must never break ingest
 
 
 def _process_raw_file(
@@ -616,6 +629,7 @@ def store_wiki_page(
     append_log(wiki_path, "ingest", title, "Stored via medulla_ingest MCP tool")
 
     broken = _check_wikilinks(wiki_path, [page_path])
+    _embed_new_wiki_pages(conn, {})
     return {"slug": slug, "type": page_type, "path": str(page_path), "broken_wikilinks": broken}
 
 

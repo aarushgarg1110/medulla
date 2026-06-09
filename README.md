@@ -130,31 +130,42 @@ export MEDULLA_DIR=~/.medulla-dev   # point at a dev/test directory
 
 ## CLI Commands
 
+CLI is for **humans**: setup, maintenance, and direct inspection. LLMs interact via MCP tools instead.
+
 ### Episodic
 
 | Command | Description |
 |---|---|
-| `medulla scan` | Index new/changed Claude + Kiro sessions (incremental by mtime) |
+| `medulla scan` | Index new/changed Claude + Kiro sessions — auto-embeds new chunks |
 | `medulla scan --force` | Re-index all sessions |
 | `medulla scan --source claude\|kiro` | Scan one source only |
-| `medulla search "<query>"` | FTS5 search across session chunks + wiki pages |
+| `medulla search "<query>"` | Hybrid BM25+vector search across session chunks + wiki pages |
+| `medulla search "<query>" --bm25-only` | Force keyword-only search |
 | `medulla search "<query>" --layer episodic\|semantic` | Layer-specific search |
 | `medulla list` | List recent sessions |
 | `medulla list --project <path>` | Filter by project directory |
 | `medulla session-detail <id>` | Full session transcript with chunks (8-char prefix OK) |
+| `medulla session-detail <id> --chunk N` | Jump directly to chunk N |
 | `medulla stats` | Episodic + semantic stats, top tools, pending queue |
 
 ### Semantic (Wiki)
 
 | Command | Description |
 |---|---|
-| `medulla ingest <file\|url>` | Ingest source → LLM generates wiki pages |
+| `medulla ingest <file\|url>` | Ingest source → LLM generates wiki pages + auto-embeds |
 | `medulla ingest` | Discover raw/ + process all queued sources |
 | `medulla ingest --force` | Re-ingest even if previously processed |
-| `medulla ingest --streaming` | Show raw tokens as they arrive (caps at 4096 — for debugging) |
 | `medulla wiki list` | Table of all wiki pages |
 | `medulla wiki lint` | Check for broken wikilinks + orphaned pages |
-| `medulla wiki open` | Open wiki vault in Obsidian (first time: Obsidian prompts "Open as vault?" — click yes) |
+| `medulla wiki open` | Open wiki vault in Obsidian |
+
+### Embeddings
+
+| Command | Description |
+|---|---|
+| `medulla embed` | Backfill embeddings for all un-embedded chunks + wiki pages |
+| `medulla embed --force` | Re-embed everything |
+| `medulla embed --reindex-edges` | Recompute `related:` cosine wikilinks for all wiki pages |
 
 ### Config & Utility
 
@@ -169,24 +180,27 @@ export MEDULLA_DIR=~/.medulla-dev   # point at a dev/test directory
 
 ---
 
-## MCP Tools (14)
+## MCP Tools (15)
+
+MCP is for **LLMs**: reading and writing memory inside a Claude Code or Kiro session.
 
 | Tool | Description |
 |---|---|
-| `medulla_search` | FTS5 search across session chunks + wiki pages |
-| `medulla_session_detail` | Full session transcript + chunks (accepts 8-char prefix) |
+| `medulla_search` | Hybrid BM25+vector search across sessions + wiki. Returns chunk_index hint for direct navigation. |
+| `medulla_session_detail` | Full session transcript + chunks. Pass `chunk_index` to jump directly to a matched chunk. |
 | `medulla_session_tree` | Parent + all subagent sessions linked together |
 | `medulla_project_context` | Recent sessions + tool events for a project directory |
 | `medulla_list` | Recent sessions with metadata |
 | `medulla_stats` | Aggregate stats across all layers |
 | `medulla_events_search` | Search tool-call events by tool name or output preview |
-| `medulla_wiki_search` | FTS5 search within wiki pages only |
-| `medulla_wiki_page` | Full content of a wiki page by slug |
 | `medulla_wiki_schema` | All existing page slugs — **call before `medulla_ingest`** |
-| `medulla_ingest` | Store a wiki page you synthesized (pure storage — you are the LLM) |
+| `medulla_wiki_search` | Semantic search within wiki pages only |
+| `medulla_wiki_page` | Full content of a wiki page by slug |
+| `medulla_ingest` | Store a wiki page you synthesized — auto-embeds and computes `related:` edges |
 | `medulla_ingest_url` | Fetch + synthesize a URL (for clients without WebFetch) |
 | `medulla_list_raw` | Raw/ files and pending queue status |
 | `medulla_analyze` | Session quality metrics — retry rates, error rates per tool |
+| `medulla_reindex_edges` | Recompute cosine `related:` edges after a batch of ingest calls |
 
 ---
 
@@ -301,7 +315,7 @@ Claude calls `medulla_wiki_search` and answers from the synthesized wiki — no 
 | CLI | Typer + Rich | Clean API, auto-generates `--help`, beautiful output |
 | DB | SQLite (stdlib) | Zero infra, single portable file |
 | Full-text search | FTS5 (built into SQLite) | BM25 ranking, no dependencies |
-| Vector search | sqlite-vec *(Sprint 4)* | Embedded in SQLite, no separate server |
+| Vector search | sqlite-vec + sentence-transformers | Embedded cosine similarity, local model (`intfloat/e5-base-v2`) |
 | MCP server | `mcp` Python SDK | Official Anthropic SDK, stdio transport |
 | PDF parsing | PyMuPDF (`fitz`) | Fast, accurate text + metadata extraction |
 | URL extraction | httpx + trafilatura | Clean article text from any web page |
@@ -311,13 +325,16 @@ Claude calls `medulla_wiki_search` and answers from the synthesized wiki — no 
 
 ## Roadmap
 
-| Sprint | Feature |
+| Issue | Feature |
 |---|---|
-| **4** | Embeddings (sqlite-vec, pluggable models, NDCG eval), Canvas LMS ingestion, `medulla update` |
-| **5** | Org sync — tag sessions public/private, push to shared S3, pull coworkers' curated summaries |
-| **6** | Codebase layer — tree-sitter AST, function/class graph, blast radius on commit |
-
-Smaller improvements in [Issues](https://github.com/aarushgarg1110/medulla/issues): parallel ingest calls (#13), `medulla remove` (#14), fuzzy search (#11), additional LLM providers (#9).
+| [#22](https://github.com/aarushgarg1110/medulla/issues/22) | Search eval harness — NDCG@5, MRR, cosine similarity threshold tuning |
+| [#14](https://github.com/aarushgarg1110/medulla/issues/14) | `medulla remove <slug>` — delete wiki page from disk + DB |
+| [#11](https://github.com/aarushgarg1110/medulla/issues/11) | Fuzzy/typo-tolerant search |
+| [#23](https://github.com/aarushgarg1110/medulla/issues/23) | PARA lifecycle tags — `status` + `area` frontmatter on wiki pages |
+| [#24](https://github.com/aarushgarg1110/medulla/issues/24) | Louvain community detection on wikilink graph |
+| [#26](https://github.com/aarushgarg1110/medulla/issues/26)/[#27](https://github.com/aarushgarg1110/medulla/issues/27) | Additional LLM providers — Gemini, OpenAI-compatible |
+| [#28](https://github.com/aarushgarg1110/medulla/issues/28)–[#31](https://github.com/aarushgarg1110/medulla/issues/31) | Recurring jobs — daily ingest, nightly review, weekly vault, Perplexity export |
+| [#32](https://github.com/aarushgarg1110/medulla/issues/32) | Future: org sync + codebase layer (tree-sitter) |
 
 ---
 

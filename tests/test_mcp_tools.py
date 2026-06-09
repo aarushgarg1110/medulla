@@ -527,6 +527,21 @@ def test_tool_search_formats_excerpt(db):
     assert "fmt-ses" in result  # session_id[:8]
 
 
+# ── medulla_reindex_edges ─────────────────────────────────────────────────────
+
+def test_tool_reindex_edges_empty_wiki(db):
+    """reindex_edges on empty wiki returns 0 pages updated."""
+    from medulla.mcp import _tool_reindex_edges
+    result = _tool_reindex_edges(db, {})
+    assert "0" in result
+
+
+def test_tool_reindex_edges_registered():
+    """medulla_reindex_edges is registered in _HANDLERS."""
+    from medulla.mcp import _HANDLERS
+    assert "medulla_reindex_edges" in _HANDLERS
+
+
 # ── dispatch unknown tool ──────────────────────────────────────────────────────
 
 def test_dispatch_unknown_tool(db):
