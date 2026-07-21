@@ -229,3 +229,50 @@ def test_session_detail_no_chunk_shows_all(chunked_session):
     result = runner.invoke(app, ["session-detail", "session-chunked-id"])
     assert result.exit_code == 0
     assert "Chunks" in result.output
+
+
+# ── session-detail --start/--end range + search excerpt ─────────────────────────
+
+@pytest.fixture
+def big_chunked_session(tmp_path, monkeypatch):
+    """Session with large messages → genuinely multiple chunks."""
+    projects = tmp_path / "claude_projects"
+    projects.mkdir()
+    monkeypatch.setattr("medulla.episodic.scanner.CLAUDE_PROJECTS_DIR", projects)
+    monkeypatch.setattr("medulla.episodic.scanner.KIRO_SESSIONS_DIR", tmp_path / "kiro_none")
+    proj = projects / "my-project"
+    proj.mkdir()
+    path = proj / "session-big.jsonl"
+    msgs = [claude_user(f"segment{i} " + "detailed analysis content sentence here " * 40,
+                        session_id="session-big-id") for i in range(16)]
+    path.write_text(make_claude_jsonl(msgs))
+    return projects
+
+
+def test_session_detail_range_shows_multiple_chunks(big_chunked_session):
+    runner.invoke(app, ["scan"])
+    result = runner.invoke(app, ["session-detail", "session-big-id", "--start", "0", "--end", "2"])
+    assert result.exit_code == 0
+    assert "Chunk 0" in result.output and "Chunk 1" in result.output and "Chunk 2" in result.output
+
+
+def test_session_detail_range_clamps_end(big_chunked_session):
+    runner.invoke(app, ["scan"])
+    result = runner.invoke(app, ["session-detail", "session-big-id", "--start", "0", "--end", "9999"])
+    assert result.exit_code == 0
+    assert "Chunks 0–" in result.output
+
+
+def test_session_detail_range_empty_errors(big_chunked_session):
+    runner.invoke(app, ["scan"])
+    result = runner.invoke(app, ["session-detail", "session-big-id", "--start", "5", "--end", "1"])
+    assert result.exit_code == 1
+    assert "Empty range" in result.output
+
+
+def test_search_command_excerpt_is_match_centered(claude_projects):
+    """CLI search shows a match-centered excerpt containing the query term."""
+    runner.invoke(app, ["scan"])
+    result = runner.invoke(app, ["search", "logD", "--bm25-only"])
+    assert result.exit_code == 0
+    assert "logD" in result.output or "logd" in result.output.lower()

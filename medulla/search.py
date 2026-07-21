@@ -73,7 +73,7 @@ def _search_chunks(conn: sqlite3.Connection, fts_query: str, limit: int) -> list
             SELECT
                 sc.session_id,
                 sc.chunk_index,
-                sc.chunk_text,
+                snippet(session_chunks_fts, 2, '', '', '…', 24) AS snip,
                 s.project_dir,
                 s.started_at,
                 scf.rank
@@ -89,7 +89,7 @@ def _search_chunks(conn: sqlite3.Connection, fts_query: str, limit: int) -> list
 
     results = []
     for row in rows:
-        excerpt = _snippet(row["chunk_text"], 200)
+        excerpt = row["snip"] or ""
         results.append(SearchResult(
             layer="episodic",
             result_type="chunk",
@@ -111,6 +111,7 @@ def _search_sessions(conn: sqlite3.Connection, fts_query: str, limit: int) -> li
             SELECT
                 s.session_id,
                 s.first_message,
+                snippet(sessions_fts, 2, '', '', '…', 24) AS snip,
                 s.project_dir,
                 s.started_at,
                 sf.rank
@@ -125,12 +126,14 @@ def _search_sessions(conn: sqlite3.Connection, fts_query: str, limit: int) -> li
 
     results = []
     for row in rows:
+        # snippet() over all_user_text centers on the match; fall back to first_message.
+        excerpt = row["snip"] or _snippet(row["first_message"] or "", 200)
         results.append(SearchResult(
             layer="episodic",
             result_type="session",
             id=row["session_id"],
             title=f"Session {row['session_id'][:8]}",
-            excerpt=_snippet(row["first_message"] or "", 200),
+            excerpt=excerpt,
             project_dir=row["project_dir"],
             date=row["started_at"],
             rank=row["rank"],
@@ -141,7 +144,9 @@ def _search_sessions(conn: sqlite3.Connection, fts_query: str, limit: int) -> li
 def _search_wiki(conn: sqlite3.Connection, fts_query: str, limit: int) -> list[SearchResult]:
     try:
         rows = conn.execute("""
-            SELECT wp.slug, wp.type, wp.title, wp.content, wf.rank
+            SELECT wp.slug, wp.type, wp.title,
+                   snippet(wiki_fts, 3, '', '', '…', 24) AS snip,
+                   wf.rank
             FROM wiki_fts wf
             JOIN wiki_pages wp ON wp.rowid = wf.rowid
             WHERE wiki_fts MATCH ?
@@ -156,7 +161,7 @@ def _search_wiki(conn: sqlite3.Connection, fts_query: str, limit: int) -> list[S
             result_type="wiki_page",
             id=row["slug"],
             title=f"[{row['type']}] {row['title']}",
-            excerpt=_snippet(_strip_frontmatter(row["content"]), 200),
+            excerpt=row["snip"] or "",
             project_dir=None,
             date=None,
             rank=row["rank"],

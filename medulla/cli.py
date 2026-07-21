@@ -144,6 +144,8 @@ def stats():
 def session_detail(
     session_id: Annotated[str, typer.Argument(help="Session ID (full or 8-char prefix)")],
     chunk: Annotated[Optional[int], typer.Option("--chunk", "-c", help="Show only this chunk index (0-based)")] = None,
+    start: Annotated[Optional[int], typer.Option("--start", help="First chunk of a range (0-based, inclusive)")] = None,
+    end: Annotated[Optional[int], typer.Option("--end", help="Last chunk of a range (0-based, inclusive; clamped)")] = None,
 ):
     """Show full detail for a session — chunks, agents, files touched."""
     from medulla.db.database import connect
@@ -177,6 +179,20 @@ def session_detail(
             raise typer.Exit(1)
         console.print(f"\n[dim]── Chunk {chunk} of {total_chunks - 1} · Session {session_id[:8]} ──[/dim]")
         console.print(matches[0]["chunk_text"])
+        return
+
+    if start is not None or end is not None:
+        lo = 0 if start is None else max(0, start)
+        hi = total_chunks - 1 if end is None else min(total_chunks - 1, end)
+        if lo > hi:
+            console.print(f"[red]Empty range: --start {start} --end {end}. "
+                          f"Session has {total_chunks} chunks (0–{total_chunks - 1}).[/red]")
+            raise typer.Exit(1)
+        console.print(f"\n[dim]── Chunks {lo}–{hi} of {total_chunks - 1} · Session {session_id[:8]} ──[/dim]")
+        for c in detail["chunks"]:
+            if lo <= c["chunk_index"] <= hi:
+                console.print(f"\n[dim]── Chunk {c['chunk_index']} (turns {c['turn_start']}–{c['turn_end']}) ──[/dim]")
+                console.print(c["chunk_text"])
         return
 
     console.print(f"\n[bold]Session:[/bold] {s['session_id']}")

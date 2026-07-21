@@ -175,16 +175,30 @@ def test_strip_frontmatter_no_frontmatter():
     assert _strip_frontmatter(content) == content
 
 
-def test_search_wiki_excerpt_strips_frontmatter(db):
-    """Wiki search results should show article content, not YAML frontmatter."""
+def test_search_wiki_excerpt_is_match_centered(db):
+    """Wiki excerpt is centered on the match (body content), not raw frontmatter."""
     from medulla.semantic.store import upsert_wiki_page
+    body = "background sentence about the topic. " * 20
     upsert_wiki_page(db, "test-wiki", "concept", "Test",
-                     "---\ntitle: Test\ntags: []\n---\n\n## Definition\n\nThis is the actual definition text.",
+                     "---\ntitle: Test\ntags: []\n---\n\n## Definition\n\n" + body
+                     + "This is the actual definition text about lipophilicity.",
                      __import__("pathlib").Path("/wiki/concepts/test.md"))
-    results = search(db, "definition text", layer="semantic")
+    results = search(db, "lipophilicity", layer="semantic")
     assert len(results) > 0
-    assert "---" not in results[0].excerpt
-    assert "definition" in results[0].excerpt.lower()
+    assert "lipophilicity" in results[0].excerpt.lower()   # match is shown
+    assert "---" not in results[0].excerpt                  # frontmatter not leaked
+
+
+def test_search_chunk_excerpt_is_match_centered(db):
+    """Chunk excerpt centers on the matched term, not the start of the chunk."""
+    lead = "unrelated preamble boilerplate caveat text that starts the chunk. " * 8
+    messages = [lead + "the important keyword is zylophenate near the end of this chunk."]
+    messages += [f"more content padding sentence {i} here about other topics" for i in range(40)]
+    _insert(db, "sess-snip", messages)
+    results = search(db, "zylophenate")
+    hits = [r for r in results if r.result_type == "chunk" and r.id == "sess-snip"]
+    assert hits
+    assert "zylophenate" in hits[0].excerpt.lower()   # match shown, not the boilerplate lead
 
 
 def test_search_wiki_fts_error_returns_empty(db):
