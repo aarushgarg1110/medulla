@@ -320,12 +320,25 @@ _HANDLERS: dict[str, Any] = {
 }
 
 
+# One SQLite connection is reused for the life of the stdio server. Opening a
+# fresh connect() per tool call re-loaded the sqlite-vec extension and re-scanned
+# the migrations dir every time; the stdio server is single-threaded (anyio) so a
+# shared connection is safe and lets the page cache stay warm across calls.
+_conn = None
+
+
+def _get_conn():
+    global _conn
+    if _conn is None:
+        _conn = connect()
+    return _conn
+
+
 def _dispatch(name: str, args: dict) -> str:
-    conn = connect()
     handler = _HANDLERS.get(name)
     if handler is None:
-        return f"Unknown tool: {name}"
-    return handler(conn, args)
+        return f"Unknown tool: {name}"   # no connection needed for an unknown tool
+    return handler(_get_conn(), args)
 
 
 def _tool_search(conn, args: dict) -> str:
