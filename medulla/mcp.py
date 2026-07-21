@@ -552,6 +552,24 @@ def _tool_stats(conn) -> str:
     return "\n".join(lines)
 
 
+_TRIVIAL_LINE_RE = __import__("re").compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*$")
+
+
+def _command_preview(command: str) -> str:
+    """First substantive line of a (possibly multi-line) command — skip blanks,
+    comments, leading `cd`, and bare VAR=value setup lines."""
+    for ln in (command or "").splitlines():
+        s = ln.strip()
+        if not s or s.startswith("#"):
+            continue
+        if s.startswith("cd ") and "&&" not in s:
+            continue
+        if _TRIVIAL_LINE_RE.match(s):
+            continue
+        return s
+    return (command or "").strip().splitlines()[0] if (command or "").strip() else ""
+
+
 def _tool_events_search(conn, args: dict) -> str:
     query = args.get("query", "").strip()
     if not query:
@@ -562,7 +580,7 @@ def _tool_events_search(conn, args: dict) -> str:
     lines = [f"{len(rows)} event(s):\n"]
     for r in rows:
         err = " ✗" if r["is_error"] else ""
-        lines.append(f"  {(r['event_ts'] or '')[:16]}{err}  {r['tool']}  {(r['command'] or '')[:80]}")
+        lines.append(f"  {(r['event_ts'] or '')[:16]}{err}  {r['tool']}  {_command_preview(r['command'])[:80]}")
         if r["output_preview"]:
             lines.append(f"    → {r['output_preview'][:60]}")
     return "\n".join(lines)

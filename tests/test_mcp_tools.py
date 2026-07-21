@@ -629,6 +629,26 @@ def test_dispatch_unknown_tool(db):
     assert "Unknown tool" in result
 
 
+def test_command_preview_skips_setup_lines():
+    from medulla.mcp import _command_preview
+    assert _command_preview("cd /x\n# note\nDB=y\npython run.py") == "python run.py"
+    assert _command_preview("cd /only") == "cd /only"   # all-trivial → first line fallback
+    assert _command_preview("") == ""
+
+
+def test_events_search_preview_shows_substantive_line(db):
+    from medulla.episodic.store import upsert_tool_events
+    from medulla.episodic.parser import ToolEvent
+    from medulla.mcp import _tool_events_search
+    ev = ToolEvent(session_id="s1", project_dir="/p", event_ts="2026-01-01T00:00:00Z",
+                   tool="Bash", command="cd /repo\ngit commit -m 'zebra-marker fix'",
+                   description="", output_preview="", is_error=False, event_hash="h1")
+    upsert_tool_events(db, "s1", [ev])
+    out = _tool_events_search(db, {"query": "zebra-marker"})
+    assert "git commit -m 'zebra-marker fix'" in out
+    assert "cd /repo" not in out   # the leading cd is not shown as the preview
+
+
 def test_get_conn_is_cached(monkeypatch):
     """_get_conn opens one connection and reuses it across calls."""
     import medulla.mcp as mcp_mod
