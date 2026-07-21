@@ -5,7 +5,7 @@ import json
 import sqlite3
 from datetime import datetime, UTC
 
-from medulla.episodic.parser import ParsedSession, ParsedAgentSession
+from medulla.episodic.parser import ParsedSession, ParsedAgentSession, ToolEvent
 from medulla.episodic.chunker import chunk_messages, Chunk
 
 
@@ -104,6 +104,28 @@ def upsert_agent_session(conn: sqlite3.Connection, agent: ParsedAgentSession) ->
         agent.last_updated_at,
         datetime.now(UTC).isoformat(),
     ))
+    conn.commit()
+
+
+def upsert_tool_events(
+    conn: sqlite3.Connection, session_id: str, events: list[ToolEvent]
+) -> None:
+    """Replace a session's harvested tool_events (idempotent on re-scan).
+
+    FTS stays in sync via the tool_events_ai/ad triggers. event_hash is UNIQUE so
+    duplicate calls within a batch are ignored.
+    """
+    conn.execute("DELETE FROM tool_events WHERE session_id = ?", (session_id,))
+    for e in events:
+        conn.execute("""
+            INSERT OR IGNORE INTO tool_events
+                (event_ts, session_id, project_dir, tool, command,
+                 output_preview, is_error, event_hash)
+            VALUES (?,?,?,?,?,?,?,?)
+        """, (
+            e.event_ts, e.session_id, e.project_dir, e.tool, e.command,
+            e.output_preview, 1 if e.is_error else 0, e.event_hash,
+        ))
     conn.commit()
 
 
@@ -226,7 +248,7 @@ def search_events(
         fts_q = " ".join(f'"{t}"' for t in query.split() if t)
         return conn.execute("""
             SELECT te.event_ts, te.session_id, te.tool, te.command,
-                   te.output_preview, tef.rank
+                   te.output_preview, te.is_error, tef.rank
             FROM tool_events_fts tef
             JOIN tool_events te ON te.rowid = tef.rowid
             WHERE tool_events_fts MATCH ?

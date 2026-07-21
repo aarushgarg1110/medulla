@@ -561,7 +561,8 @@ def _tool_events_search(conn, args: dict) -> str:
         return f"No tool events found for: {query}"
     lines = [f"{len(rows)} event(s):\n"]
     for r in rows:
-        lines.append(f"  {(r['event_ts'] or '')[:16]}  {r['tool']}  {(r['command'] or '')[:80]}")
+        err = " ✗" if r["is_error"] else ""
+        lines.append(f"  {(r['event_ts'] or '')[:16]}{err}  {r['tool']}  {(r['command'] or '')[:80]}")
         if r["output_preview"]:
             lines.append(f"    → {r['output_preview'][:60]}")
     return "\n".join(lines)
