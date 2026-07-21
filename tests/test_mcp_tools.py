@@ -150,6 +150,37 @@ def test_tool_session_detail_overview_shows_chunk_hint(db):
     assert "chunk_index" in result
 
 
+def test_prewarm_embeddings_warms_provider(monkeypatch):
+    """_prewarm_embeddings loads the model off-thread by calling embed(['warmup'])."""
+    import medulla.search as search_mod
+    calls = []
+
+    class _Fake:
+        def embed(self, texts):
+            calls.append(texts)
+            return [[0.0]]
+
+    monkeypatch.setattr(search_mod, "_get_search_embedding_provider", lambda: _Fake())
+    from medulla.mcp import _prewarm_embeddings
+    t = _prewarm_embeddings()
+    t.join(timeout=5)
+    assert calls == [["warmup"]]
+
+
+def test_prewarm_embeddings_swallows_errors(monkeypatch):
+    """A provider failure must never crash the pre-warm thread."""
+    import medulla.search as search_mod
+
+    def _boom():
+        raise RuntimeError("no embedding model")
+
+    monkeypatch.setattr(search_mod, "_get_search_embedding_provider", _boom)
+    from medulla.mcp import _prewarm_embeddings
+    t = _prewarm_embeddings()
+    t.join(timeout=5)
+    assert not t.is_alive()  # thread finished cleanly, no exception propagated
+
+
 def _setup_multichunk(db, sid="sess-range-001"):
     """A session large enough to span several chunks."""
     messages = [f"marker{i:02d} " + "detailed discussion content sentence here " * 40 for i in range(20)]
