@@ -708,11 +708,42 @@ def _tool_reindex_edges(conn, args: dict) -> str:
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
+def _prewarm_embeddings() -> "Any":
+    """Load the search embedding model in a background daemon thread.
+
+    The e5 model takes ~11s to load and is loaded lazily on the first search,
+    so without this the first medulla_search of a session blocks for ~11s. By
+    kicking the load off at server startup it is usually resident by the time
+    the first query arrives; a query that races the load just blocks on the
+    same lock (no worse than today). Returns the thread (for tests). Never
+    raises — embeddings are optional.
+    """
+    import threading
+    import time
+
+    def _load() -> None:
+        start = time.monotonic()
+        try:
+            from medulla.search import _get_search_embedding_provider
+            _get_search_embedding_provider().embed(["warmup"])
+            # stderr only — stdout is the MCP protocol channel. Shows in server logs.
+            print(f"medulla: embedding model warmed in {time.monotonic() - start:.1f}s",
+                  file=sys.stderr, flush=True)
+        except Exception as e:  # embeddings unavailable → search falls back to BM25
+            print(f"medulla: embedding pre-warm skipped ({type(e).__name__}) — search uses BM25",
+                  file=sys.stderr, flush=True)
+
+    t = threading.Thread(target=_load, name="medulla-embed-prewarm", daemon=True)
+    t.start()
+    return t
+
+
 def serve() -> None:  # pragma: no cover
     anyio.run(_serve)
 
 
 async def _serve() -> None:  # pragma: no cover
+    _prewarm_embeddings()
     async with stdio_server() as (read_stream, write_stream):
         await _server.run(
             read_stream,

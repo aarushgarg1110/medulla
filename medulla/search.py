@@ -172,14 +172,20 @@ def _search_wiki(conn: sqlite3.Connection, fts_query: str, limit: int) -> list[S
 # ── hybrid search ─────────────────────────────────────────────────────────────
 
 # Module-level singleton so the embedding model loads once per process.
+# Guarded by a lock so a background pre-warm thread and the first real search
+# can't both construct/load the model concurrently.
+import threading as _threading
 _search_embedding_provider = None
+_search_provider_lock = _threading.Lock()
 
 
 def _get_search_embedding_provider():
     global _search_embedding_provider
     if _search_embedding_provider is None:
-        from medulla.embeddings import get_embedding_provider
-        _search_embedding_provider = get_embedding_provider()
+        with _search_provider_lock:
+            if _search_embedding_provider is None:
+                from medulla.embeddings import get_embedding_provider
+                _search_embedding_provider = get_embedding_provider()
     return _search_embedding_provider
 
 
