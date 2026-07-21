@@ -18,17 +18,19 @@ def upsert_wiki_page(
     sources: list[str] | None = None,
     scope: str = "personal",
     session_id: str | None = None,
+    raw_path: "Path | None" = None,
 ) -> None:
     now = datetime.now(UTC).isoformat()
     conn.execute("""
-        INSERT INTO wiki_pages (slug, type, title, tags, sources, content, file_path, scope, session_id, ingested_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        INSERT INTO wiki_pages (slug, type, title, tags, sources, content, file_path, scope, session_id, raw_path, ingested_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(slug) DO UPDATE SET
             title=excluded.title,
             tags=excluded.tags,
             sources=excluded.sources,
             content=excluded.content,
             file_path=excluded.file_path,
+            raw_path=excluded.raw_path,
             updated_at=excluded.updated_at
     """, (
         slug, page_type, title,
@@ -38,6 +40,7 @@ def upsert_wiki_page(
         str(file_path),
         scope,
         session_id,
+        str(raw_path) if raw_path else None,
         now, now,
     ))
     conn.commit()
