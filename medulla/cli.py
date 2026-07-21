@@ -261,6 +261,81 @@ def embed(
         console.print(f"  ✓ {updated} wiki pages updated with related: edges")
 
 
+# ── remove ─────────────────────────────────────────────────────────────────────
+
+@app.command()
+def remove(
+    target: Annotated[str, typer.Argument(help="Page to remove: sources/slug, concepts/slug, entities/slug, or raw/filename")],
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation prompt")] = False,
+    cascade: Annotated[bool, typer.Option("--cascade", help="Also remove concepts/entities that become orphaned (no sources)")] = False,
+):
+    """Remove a wiki page or raw file. Shows affected pages before confirming."""
+    from medulla.db.database import connect
+    from medulla.config import get_config
+    from medulla.semantic.remove import plan_remove, execute_remove
+
+    conn = connect()
+    wiki_path = get_config().wiki_path
+    plan = plan_remove(conn, target, wiki_path=wiki_path)
+
+    if "error" in plan:
+        console.print(f"[red]{plan['error']}[/red]")
+        raise typer.Exit(1)
+
+    # ── Show what will happen ────────────────────────────────────────────────
+    console.print()
+    if plan["target_type"] == "raw":
+        console.print(f"[bold]Remove raw file:[/bold] [cyan]{plan['target_filename']}[/cyan]")
+        if plan["linked_source_slug"]:
+            console.print(f"  Also removes source page: [cyan]{plan['linked_source_slug']}[/cyan]")
+        else:
+            console.print("  [dim]No linked source page found.[/dim]")
+    else:
+        console.print(f"[bold]Remove {plan['target_type']}:[/bold] [cyan]{plan['target_slug']}[/cyan]")
+
+        if plan.get("affected_sources_update"):
+            console.print(f"\n  Removes from [magenta]sources:[/magenta] on {len(plan['affected_sources_update'])} page(s):")
+            for s in plan["affected_sources_update"][:8]:
+                console.print(f"    [magenta]•[/magenta] {s}")
+            if len(plan["affected_sources_update"]) > 8:
+                console.print(f"    [dim]... +{len(plan['affected_sources_update']) - 8} more[/dim]")
+
+        if plan.get("would_orphan"):
+            if cascade:
+                console.print(f"\n  Also removes (orphaned, no remaining sources):")
+                for s in plan["would_orphan"]:
+                    folder = "concepts" if conn.execute(
+                        "SELECT type FROM wiki_pages WHERE slug=?", (s,)
+                    ).fetchone()["type"] == "concept" else "entities"
+                    console.print(f"    [red]•[/red] {folder}/{s}")
+            else:
+                console.print(f"\n  [dim]Will have empty sources (orphaned):[/dim]")
+                for s in plan["would_orphan"]:
+                    console.print(f"    [dim]•[/dim] {s}")
+                console.print(f"  [dim]  Add --cascade to remove them.[/dim]")
+
+        if plan.get("related_cleanup"):
+            console.print(f"\n  Cleans [green]related:[/green] links on {len(plan['related_cleanup'])} page(s):")
+            for s in plan["related_cleanup"][:8]:
+                console.print(f"    [green]•[/green] {s}")
+            if len(plan["related_cleanup"]) > 8:
+                console.print(f"    [dim]... +{len(plan['related_cleanup']) - 8} more[/dim]")
+
+    # ── Confirm ──────────────────────────────────────────────────────────────
+    if not yes:
+        if not typer.confirm("\nProceed?", default=False):
+            console.print("[dim]Aborted.[/dim]")
+            raise typer.Exit(0)
+
+    # ── Execute ──────────────────────────────────────────────────────────────
+    result = execute_remove(conn, target, wiki_path=wiki_path, cascade=cascade)
+    for path in result.get("removed", []):
+        console.print(f"  [red]✗[/red] Removed: {path}")
+    for slug in result.get("cleaned", []):
+        console.print(f"  [dim]✓ Cleaned references in: {slug}[/dim]")
+    console.print("[green]Done.[/green]")
+
+
 # ── mcp ────────────────────────────────────────────────────────────────────────
 
 @app.command()

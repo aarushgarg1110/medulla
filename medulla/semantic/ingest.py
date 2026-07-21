@@ -395,10 +395,18 @@ def _run_llm_pipeline(
 
     # Write source page
     source_path = write_source_page(wiki_path, source_slug, source_data, source_ref, scope)
+    # raw_path: the raw/ archive file for local sources; None for URLs.
+    # For file sources, source_ref is already the wiki/raw/ copy path.
+    _raw_path = None
+    if not source_ref.startswith("http"):
+        _p = Path(source_ref)
+        if _p.exists():
+            _raw_path = _p
     upsert_wiki_page(
         conn, source_slug, "source", source_data["title"],
         source_path.read_text(), source_path,
         tags=source_data.get("tags", []), scope=scope,
+        raw_path=_raw_path,
     )
     update_index(wiki_path, source_slug, "source", source_data["title"],
                  (source_data.get("summary") or "")[:80])
@@ -609,6 +617,7 @@ def store_wiki_page(
     page_path.write_text(content)
 
     # Local file → copy to raw/ for immutable archive + backtrace
+    raw_dest = None
     if source_path:
         src = Path(source_path)
         if src.exists():
@@ -624,7 +633,8 @@ def store_wiki_page(
         append_url_reference(wiki_path, slug, source_url, title=title)
 
     upsert_wiki_page(conn, slug, page_type, title, content, page_path,
-                     tags=tags or [], scope=scope)
+                     tags=tags or [], scope=scope,
+                     raw_path=raw_dest if page_type == "source" else None)
     update_index(wiki_path, slug, page_type, title, _extract_summary(content))
     append_log(wiki_path, "ingest", title, "Stored via medulla_ingest MCP tool")
 

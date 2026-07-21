@@ -257,6 +257,22 @@ _TOOLS = [
         },
     ),
     types.Tool(
+        name="medulla_remove",
+        description=(
+            "Remove a wiki page or raw file. "
+            "target format: 'sources/slug', 'concepts/slug', 'entities/slug', or 'raw/filename'. "
+            "cascade=true also deletes concepts/entities that become orphaned after removing a source."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "sources/slug, concepts/slug, entities/slug, or raw/filename"},
+                "cascade": {"type": "boolean", "default": False},
+            },
+            "required": ["target"],
+        },
+    ),
+    types.Tool(
         name="medulla_reindex_edges",
         description=(
             "Recompute cosine-similarity related: wikilinks for all embedded wiki pages. "
@@ -297,6 +313,7 @@ _HANDLERS: dict[str, Any] = {
     "medulla_list_raw": lambda conn, args: _tool_list_raw(conn, args),
     "medulla_analyze": lambda conn, args: _tool_analyze(conn, args),
     "medulla_reindex_edges": lambda conn, args: _tool_reindex_edges(conn, args),
+    "medulla_remove": lambda conn, args: _tool_remove(conn, args),
 }
 
 
@@ -634,6 +651,23 @@ def _tool_analyze(conn, args: dict) -> str:
         )
     # Future: compute retry/help/error rates per manifest_key
     return f"tool_events count: {count}. Full manifest quality analysis coming in Sprint 5."
+
+
+def _tool_remove(conn, args: dict) -> str:
+    target = args.get("target", "").strip()
+    if not target:
+        return "Error: target is required (e.g. 'concepts/adam-optimizer')"
+    from medulla.config import get_config
+    from medulla.semantic.remove import plan_remove, execute_remove
+    wiki_path = get_config().wiki_path
+    plan = plan_remove(conn, target, wiki_path=wiki_path)
+    if "error" in plan:
+        return plan["error"]
+    result = execute_remove(conn, target, wiki_path=wiki_path, cascade=args.get("cascade", False))
+    removed = result.get("removed", [])
+    cleaned = result.get("cleaned", [])
+    return (f"Removed {len(removed)} file(s), cleaned references in {len(cleaned)} page(s). "
+            f"Removed: {', '.join(removed[:3])}{'...' if len(removed) > 3 else ''}")
 
 
 def _tool_reindex_edges(conn, args: dict) -> str:
