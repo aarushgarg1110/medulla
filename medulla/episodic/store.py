@@ -51,8 +51,11 @@ def upsert_session(conn: sqlite3.Connection, session: ParsedSession) -> None:
         datetime.now(UTC).isoformat(),
     ))
 
-    # Replace chunks
+    # Replace chunks. Also drop stale embeddings — chunk_index space changes when
+    # re-chunking, so old vectors would mismatch the new chunk text. They are
+    # re-embedded by the scanner after upsert.
     conn.execute("DELETE FROM session_chunks WHERE session_id = ?", (session.session_id,))
+    conn.execute("DELETE FROM vec_chunks WHERE session_id = ?", (session.session_id,))
     chunks = chunk_messages(session.messages)
     for chunk in chunks:
         conn.execute("""

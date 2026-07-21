@@ -244,8 +244,8 @@ def test_wiki_result_has_no_chunk_index(db):
 
 def test_chunk_index_is_not_always_zero(db):
     """chunk_index reflects the actual matched chunk, not always 0."""
-    # 25 messages → multiple chunks; last chunk contains unique term
-    messages = [f"filler content message number {i}" for i in range(24)]
+    # Substantial filler → multiple chunks; unique term only in the last one.
+    messages = [f"filler{i} " + "routine conversation content padding here " * 30 for i in range(24)]
     messages.append("late-chunk-unique-marker at the end of session")
     _insert(db, "sess-late", messages)
     results = search(db, "late-chunk-unique-marker")

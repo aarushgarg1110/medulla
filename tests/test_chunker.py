@@ -205,3 +205,25 @@ def test_chunk_messages_uses_topic_shift_by_default():
     messages = [_logd_msg(i) for i in range(TURNS_PER_CHUNK + 5)]
     chunks = chunk_messages(messages)
     assert len(chunks) >= 1
+
+
+def test_topic_shift_no_content_loss_with_large_messages():
+    """Every message survives even when chunks brush the char cap (no truncation loss)."""
+    # Each message ~1.2k chars; several exceed a chunk when combined.
+    messages = [f"UNIQUEMARK{i:03d} " + "padding content words here " * 45 for i in range(30)]
+    chunks = _chunk_by_topic(messages)
+    combined = " ".join(c.chunk_text for c in chunks)
+    for i in range(30):
+        assert f"UNIQUEMARK{i:03d}" in combined
+    for c in chunks:
+        assert len(c.chunk_text) <= MAX_CHUNK_CHARS
+
+
+def test_topic_shift_produces_substantial_chunks():
+    """Same-topic content packs into few large chunks, not many tiny ones."""
+    # 60 short same-topic messages (~30 chars each) → well under one chunk.
+    messages = [f"consistent topic message about logd prediction number {i}" for i in range(60)]
+    chunks = _chunk_by_topic(messages)
+    # Old vocabulary-divergence chunker shredded this into ~10+ tiny chunks;
+    # size-primary packing keeps it to a couple.
+    assert len(chunks) <= 3
