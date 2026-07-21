@@ -69,11 +69,12 @@ def test_upsert_session_inserts(db):
 
 
 def test_upsert_session_creates_chunks(db):
-    messages = [f"msg {i}" for i in range(25)]
+    # Substantial messages so the size-primary chunker produces multiple chunks.
+    messages = [f"marker{i} " + "topic content sentence here " * 40 for i in range(25)]
     session = make_session(messages=messages)
     upsert_session(db, session)
     chunks = db.execute("SELECT * FROM session_chunks WHERE session_id = ?", ("sess-001",)).fetchall()
-    assert len(chunks) >= 2  # 25 messages → at least 2 chunks (default window=20)
+    assert len(chunks) >= 2  # ~25k chars → multiple chunks under the 4000-char cap
 
 
 def test_upsert_session_updates_on_conflict(db):
@@ -86,15 +87,40 @@ def test_upsert_session_updates_on_conflict(db):
 
 
 def test_upsert_session_replaces_chunks_on_update(db):
-    session = make_session(messages=["a", "b", "c"])
-    upsert_session(db, session)
+    # Start with large content → multiple chunks.
+    big = [f"alpha{i} " + "detailed discussion of the topic " * 40 for i in range(20)]
+    upsert_session(db, make_session(messages=big))
     before = db.execute("SELECT COUNT(*) FROM session_chunks WHERE session_id = ?", ("sess-001",)).fetchone()[0]
+    assert before > 1
 
-    updated = make_session(messages=["x"] * 50)
-    upsert_session(db, updated)
-    after = db.execute("SELECT COUNT(*) FROM session_chunks WHERE session_id = ?", ("sess-001",)).fetchone()[0]
+    # Replace with tiny content → chunks are replaced, not appended.
+    upsert_session(db, make_session(messages=["one short replacement message"]))
+    rows = db.execute("SELECT chunk_text FROM session_chunks WHERE session_id = ?", ("sess-001",)).fetchall()
+    assert len(rows) == 1
+    assert "replacement" in rows[0]["chunk_text"]
+    assert "alpha0" not in rows[0]["chunk_text"]  # old content gone
 
-    assert after > before  # more chunks from more messages
+
+def test_upsert_session_clears_stale_embeddings_on_rechunk(db):
+    """Re-chunking a session drops its old vec_chunks so vectors never mismatch text."""
+    from medulla.db.embedding_store import upsert_chunk_embedding
+    session = make_session(messages=["a"] * 60)
+    upsert_session(db, session)
+    n_chunks = db.execute(
+        "SELECT COUNT(*) FROM session_chunks WHERE session_id = ?", ("sess-001",)
+    ).fetchone()[0]
+    # Simulate embeddings for every chunk index of the first indexing.
+    for idx in range(n_chunks):
+        upsert_chunk_embedding(db, "sess-001", idx, [0.1] * 768)
+    assert db.execute(
+        "SELECT COUNT(*) FROM vec_chunks WHERE session_id = ?", ("sess-001",)
+    ).fetchone()[0] == n_chunks
+
+    # Re-index with far fewer messages → fewer chunks. Stale vectors must be gone.
+    upsert_session(db, make_session(messages=["x", "y"]))
+    assert db.execute(
+        "SELECT COUNT(*) FROM vec_chunks WHERE session_id = ?", ("sess-001",)
+    ).fetchone()[0] == 0
 
 
 def test_upsert_session_fts_indexed(db):
