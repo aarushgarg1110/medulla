@@ -447,7 +447,7 @@ def _parse_kiro(path: Path, slug: str, body: str) -> ParsedSession | None:
                 c["data"] for c in content
                 if isinstance(c, dict) and c.get("kind") == "text" and c.get("data")
             ]
-            text = " ".join(text_parts).strip()
+            text = _sanitize_text(" ".join(text_parts))
             if text:
                 if first_message is None:
                     first_message = text[:MAX_FIRST_MSG]
@@ -461,7 +461,7 @@ def _parse_kiro(path: Path, slug: str, body: str) -> ParsedSession | None:
                 c["data"] for c in content
                 if isinstance(c, dict) and c.get("kind") == "text" and c.get("data")
             ]
-            text = " ".join(text_parts).strip()
+            text = _sanitize_text(" ".join(text_parts))
             if text:
                 messages.append(text)
             # Extract tool calls

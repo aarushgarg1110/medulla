@@ -60,3 +60,19 @@ def test_extract_user_text_sanitizes_list_content():
 def test_extract_assistant_text_string_content_sanitized():
     msg = {"role": "assistant", "content": "<system-reminder>x</system-reminder> the answer"}
     assert _extract_assistant_text(msg) == "the answer"
+
+
+def test_kiro_parser_sanitizes(tmp_path):
+    """Kiro sessions run through the same sanitizer (no-op today, future-proof)."""
+    import json
+    from medulla.episodic.parser import parse_session
+    rec = {"version": "v1", "kind": "Prompt", "data": {
+        "meta": {"timestamp": 1_700_000_000},
+        "content": [{"kind": "text",
+                     "data": "<system-reminder>meta</system-reminder> real kiro question here"}]}}
+    p = tmp_path / "k1.jsonl"
+    p.write_text(json.dumps(rec))
+    ps = parse_session(p)
+    assert ps is not None and ps.source == "kiro"
+    assert ps.messages == ["real kiro question here"]
+    assert "system-reminder" not in ps.first_message
