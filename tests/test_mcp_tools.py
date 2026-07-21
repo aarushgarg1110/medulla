@@ -627,3 +627,31 @@ def test_tool_reindex_edges_registered():
 def test_dispatch_unknown_tool(db):
     result = _dispatch("medulla_nonexistent", {})
     assert "Unknown tool" in result
+
+
+def test_get_conn_is_cached(monkeypatch):
+    """_get_conn opens one connection and reuses it across calls."""
+    import medulla.mcp as mcp_mod
+    calls = {"n": 0}
+    sentinel = object()
+
+    def _fake_connect(*a, **k):
+        calls["n"] += 1
+        return sentinel
+
+    monkeypatch.setattr(mcp_mod, "connect", _fake_connect)
+    monkeypatch.setattr(mcp_mod, "_conn", None)
+    a = mcp_mod._get_conn()
+    b = mcp_mod._get_conn()
+    assert a is b is sentinel
+    assert calls["n"] == 1   # connect() called once, not per call
+
+
+def test_dispatch_uses_cached_conn(monkeypatch, db):
+    """_dispatch routes a real handler through the cached connection."""
+    import medulla.mcp as mcp_mod
+    _setup(db)
+    monkeypatch.setattr(mcp_mod, "_conn", None)
+    monkeypatch.setattr(mcp_mod, "connect", lambda *a, **k: db)
+    out = _dispatch("medulla_stats", {})
+    assert "Episodic" in out
