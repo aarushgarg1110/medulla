@@ -719,13 +719,19 @@ def _prewarm_embeddings() -> "Any":
     raises — embeddings are optional.
     """
     import threading
+    import time
 
     def _load() -> None:
+        start = time.monotonic()
         try:
             from medulla.search import _get_search_embedding_provider
             _get_search_embedding_provider().embed(["warmup"])
-        except Exception:
-            pass  # embeddings unavailable → search falls back to BM25
+            # stderr only — stdout is the MCP protocol channel. Shows in server logs.
+            print(f"medulla: embedding model warmed in {time.monotonic() - start:.1f}s",
+                  file=sys.stderr, flush=True)
+        except Exception as e:  # embeddings unavailable → search falls back to BM25
+            print(f"medulla: embedding pre-warm skipped ({type(e).__name__}) — search uses BM25",
+                  file=sys.stderr, flush=True)
 
     t = threading.Thread(target=_load, name="medulla-embed-prewarm", daemon=True)
     t.start()

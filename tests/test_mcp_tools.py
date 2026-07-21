@@ -150,7 +150,7 @@ def test_tool_session_detail_overview_shows_chunk_hint(db):
     assert "chunk_index" in result
 
 
-def test_prewarm_embeddings_warms_provider(monkeypatch):
+def test_prewarm_embeddings_warms_provider(monkeypatch, capsys):
     """_prewarm_embeddings loads the model off-thread by calling embed(['warmup'])."""
     import medulla.search as search_mod
     calls = []
@@ -165,10 +165,11 @@ def test_prewarm_embeddings_warms_provider(monkeypatch):
     t = _prewarm_embeddings()
     t.join(timeout=5)
     assert calls == [["warmup"]]
+    assert "warmed in" in capsys.readouterr().err   # observable log on stderr
 
 
-def test_prewarm_embeddings_swallows_errors(monkeypatch):
-    """A provider failure must never crash the pre-warm thread."""
+def test_prewarm_embeddings_swallows_errors(monkeypatch, capsys):
+    """A provider failure must never crash the pre-warm thread; it logs and moves on."""
     import medulla.search as search_mod
 
     def _boom():
@@ -179,6 +180,7 @@ def test_prewarm_embeddings_swallows_errors(monkeypatch):
     t = _prewarm_embeddings()
     t.join(timeout=5)
     assert not t.is_alive()  # thread finished cleanly, no exception propagated
+    assert "pre-warm skipped" in capsys.readouterr().err
 
 
 def _setup_multichunk(db, sid="sess-range-001"):
