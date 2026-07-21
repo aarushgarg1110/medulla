@@ -6,10 +6,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from medulla.episodic.parser import (
-    parse_session, parse_agent_session, is_subagent_file
+    parse_session, parse_agent_session, is_subagent_file, extract_tool_events
 )
 from medulla.episodic.store import (
-    upsert_session, upsert_agent_session,
+    upsert_session, upsert_agent_session, upsert_tool_events,
     get_session_scanned_at, get_agent_scanned_at,
 )
 
@@ -105,6 +105,7 @@ def _process_session(conn: sqlite3.Connection, path: Path, force: bool) -> str:
 
     upsert_session(conn, session)
     _embed_session_chunks(conn, session.session_id)
+    upsert_tool_events(conn, session.session_id, extract_tool_events(path))
     return "indexed"
 
 

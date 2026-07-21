@@ -6,10 +6,13 @@ Only tool_use and tool_result blocks are excluded (noisy / already in tool_event
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+
+from medulla.episodic.scrub import scrub_secrets
 
 
 MAX_FIRST_MSG = 500
@@ -53,8 +56,123 @@ class ParsedAgentSession:
     last_updated_at: str | None
 
 
+@dataclass
+class ToolEvent:
+    session_id: str
+    project_dir: str | None
+    event_ts: str | None
+    tool: str
+    command: str
+    description: str
+    output_preview: str
+    is_error: bool
+    event_hash: str
+
+
 def is_subagent_file(path: Path) -> bool:
     return bool(SUBAGENT_PATH_RE.search(str(path)))
+
+
+# ── tool-event extraction (backfill of command history) ─────────────────────────
+
+_TRIVIAL_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*$")
+
+
+def _derive_command(name: str, inp: object) -> str:
+    """Best-effort human-meaningful command string for any tool."""
+    if not isinstance(inp, dict):
+        return f"{name} {str(inp)[:200]}".strip()
+    cmd = inp.get("command")
+    if isinstance(cmd, str) and cmd.strip():
+        return cmd
+    for k in ("file_path", "path", "pattern", "query", "url", "notebook_path"):
+        v = inp.get(k)
+        if isinstance(v, str) and v.strip():
+            return f"{name} {v}"
+    return f"{name} {json.dumps(inp, default=str)[:200]}"
+
+
+def _is_trivial_command(cmd: str) -> bool:
+    """Single-line `cd …` or bare VAR=value — low recall value, skip."""
+    lines = [ln for ln in cmd.strip().splitlines() if ln.strip()]
+    if len(lines) != 1:
+        return False  # multi-line commands are substantive (kept)
+    ln = lines[0].strip()
+    return ln.startswith("cd ") or bool(_TRIVIAL_ASSIGN_RE.match(ln))
+
+
+def _result_output(block: dict, tool_use_result: object) -> str:
+    if isinstance(tool_use_result, dict):
+        return str(tool_use_result.get("stdout") or tool_use_result.get("stderr") or "")
+    content = block.get("content")
+    if isinstance(content, list):
+        return " ".join(x.get("text", "") for x in content if isinstance(x, dict))
+    return str(content or "")
+
+
+def extract_tool_events(path: Path) -> list[ToolEvent]:
+    """Harvest tool_use/tool_result pairs from a session JSONL into ToolEvents.
+
+    Commands and outputs are secret-scrubbed; trivial `cd`/assignments are dropped.
+    Subagent files are skipped (harvested with their parent session's scan cycle
+    is out of scope for v1).
+    """
+    if is_subagent_file(path):
+        return []
+    try:
+        body = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+
+    session_id = path.stem
+    uses: dict[str, tuple[str, object, str | None, str | None]] = {}
+    events: list[ToolEvent] = []
+
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        node = _read_json(line)
+        if node is None:
+            continue
+        if node.get("sessionId"):
+            session_id = node["sessionId"]
+        ts = node.get("timestamp")
+        project = node.get("cwd")
+        tool_use_result = node.get("toolUseResult")
+
+        msg = node.get("message", {})
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            continue
+
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "tool_use":
+                uses[block.get("id")] = (block.get("name", ""), block.get("input", {}), ts, project)
+            elif btype == "tool_result":
+                tid = block.get("tool_use_id")
+                if tid not in uses:
+                    continue
+                name, inp, use_ts, use_proj = uses.pop(tid)
+                cmd = _derive_command(name, inp)
+                if _is_trivial_command(cmd):
+                    continue
+                desc = inp.get("description", "") if isinstance(inp, dict) else ""
+                events.append(ToolEvent(
+                    session_id=session_id,
+                    project_dir=use_proj,
+                    event_ts=use_ts,
+                    tool=name,
+                    command=scrub_secrets(cmd)[:500],
+                    description=(desc or "")[:200],
+                    output_preview=scrub_secrets(_result_output(block, tool_use_result))[:200],
+                    is_error=bool(block.get("is_error")),
+                    event_hash=hashlib.sha256(f"{session_id}:{tid}".encode()).hexdigest(),
+                ))
+    return events
 
 
 def parse_session(path: Path) -> ParsedSession | None:
