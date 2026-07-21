@@ -49,15 +49,18 @@ _TOOLS = [
         name="medulla_session_detail",
         description=(
             "Retrieve content of a specific session. "
-            "Without chunk_index: returns session metadata + first 5 chunks. "
-            "With chunk_index: returns that specific chunk in full (use to page through a long session). "
-            "Call repeatedly with increasing chunk_index to read the full session."
+            "Without chunk args: returns session metadata + first 3 chunks. "
+            "With chunk_index: returns that one chunk in full. "
+            "With chunk_start/chunk_end: returns that whole range in one call (preferred for "
+            "reading a topic that spans several chunks — do this instead of paging one chunk at a time)."
         ),
         inputSchema={
             "type": "object",
             "properties": {
                 "session_id": {"type": "string", "description": "Session ID (full UUID or 8-char prefix)"},
-                "chunk_index": {"type": "integer", "description": "Specific chunk to fetch (0-based). Omit for session overview + first 5 chunks."},
+                "chunk_index": {"type": "integer", "description": "Single chunk to fetch (0-based). Omit for overview or use chunk_start/chunk_end for a range."},
+                "chunk_start": {"type": "integer", "description": "First chunk of a range (0-based, inclusive). Defaults to 0 if only chunk_end is given."},
+                "chunk_end": {"type": "integer", "description": "Last chunk of a range (0-based, inclusive). Defaults to the final chunk if only chunk_start is given. Clamped to the session length."},
             },
             "required": ["session_id"],
         },
@@ -369,6 +372,29 @@ def _tool_session_detail(conn, args: dict) -> str:
     s = detail["session"]
     total_chunks = len(detail["chunks"])
 
+    # Range requested — return chunk_start..chunk_end concatenated in one call.
+    chunk_start = args.get("chunk_start")
+    chunk_end = args.get("chunk_end")
+    if chunk_start is not None or chunk_end is not None:
+        start = 0 if chunk_start is None else max(0, chunk_start)
+        end = total_chunks - 1 if chunk_end is None else min(total_chunks - 1, chunk_end)
+        if start > end:
+            return (f"Empty range: chunk_start={chunk_start}, chunk_end={chunk_end}. "
+                    f"Session has {total_chunks} chunks (0–{total_chunks - 1}).")
+        selected = [c for c in detail["chunks"] if start <= c["chunk_index"] <= end]
+        lines = [
+            f"Session {s['session_id'][:8]} — chunks {start}–{end} of {total_chunks - 1}",
+            "",
+        ]
+        for c in selected:
+            lines.append(f"── Chunk {c['chunk_index']} (turns {c['turn_start']}–{c['turn_end']}) ──")
+            lines.append(c["chunk_text"])
+            lines.append("")
+        lines.append(
+            f"[Next: chunk_start={end + 1}]" if end + 1 < total_chunks else "[End of session]"
+        )
+        return "\n".join(lines)
+
     # Specific chunk requested — return it in full
     chunk_index = args.get("chunk_index")
     if chunk_index is not None:
@@ -386,25 +412,27 @@ def _tool_session_detail(conn, args: dict) -> str:
         ]
         return "\n".join(lines)
 
-    # Overview: metadata + first 5 chunks
+    # Overview: metadata + first 3 chunks
     lines = []
     lines.append(f"Session: {s['session_id']}")
     lines.append(f"Project: {s.get('project_dir', '')}")
     lines.append(f"Date:    {(s.get('started_at') or '')[:10]} → {(s.get('ended_at') or '')[:10]}")
     lines.append(f"Turns:   {s.get('turn_count', 0)}   Tool calls: {s.get('tool_call_count', 0)}")
-    lines.append(f"Chunks:  {total_chunks} total (use chunk_index=N to fetch any chunk in full)")
+    lines.append(f"Chunks:  {total_chunks} total (chunk_index=N for one, or chunk_start/chunk_end for a range)")
     lines.append("")
     if detail["agents"]:
         lines.append(f"Subagents ({len(detail['agents'])}):")
         for a in detail["agents"]:
             lines.append(f"  {a['agent_id'][:8]}  {a.get('first_message', '')[:60]}")
         lines.append("")
-    lines.append("First 5 chunks (call with chunk_index=N for any specific chunk):")
-    for c in detail["chunks"][:5]:
+    preview = min(3, total_chunks)
+    lines.append(f"First {preview} chunk(s) (use chunk_start/chunk_end to read a range in one call):")
+    for c in detail["chunks"][:preview]:
         lines.append(f"\n── Chunk {c['chunk_index']} (turns {c['turn_start']}–{c['turn_end']}) ──")
         lines.append(c["chunk_text"][:1500])
-    if total_chunks > 5:
-        lines.append(f"\n... {total_chunks - 5} more chunks. Use chunk_index=5 through chunk_index={total_chunks - 1} to read them.")
+    if total_chunks > preview:
+        lines.append(f"\n... {total_chunks - preview} more chunks. "
+                     f"Use chunk_start={preview}, chunk_end={total_chunks - 1} to read the rest.")
     return "\n".join(lines)
 
 

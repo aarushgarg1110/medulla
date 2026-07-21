@@ -150,6 +150,53 @@ def test_tool_session_detail_overview_shows_chunk_hint(db):
     assert "chunk_index" in result
 
 
+def _setup_multichunk(db, sid="sess-range-001"):
+    """A session large enough to span several chunks."""
+    messages = [f"marker{i:02d} " + "detailed discussion content sentence here " * 40 for i in range(20)]
+    s = make_session(sid, project_dir="/proj/mlops", messages=messages)
+    upsert_session(db, s)
+    n = db.execute("SELECT COUNT(*) FROM session_chunks WHERE session_id=?", (sid,)).fetchone()[0]
+    return n
+
+
+def test_tool_session_detail_range_returns_multiple_chunks(db):
+    """chunk_start/chunk_end returns the whole range concatenated in one call."""
+    n = _setup_multichunk(db)
+    assert n >= 4
+    result = _tool_session_detail(db, {"session_id": "sess-range-001", "chunk_start": 1, "chunk_end": 3})
+    assert "Chunk 1" in result and "Chunk 2" in result and "Chunk 3" in result
+    assert "Chunk 0" not in result.split("Chunk 1")[0]  # 0 not included before 1
+
+
+def test_tool_session_detail_range_clamps_end(db):
+    """chunk_end beyond the session is clamped, not an error."""
+    n = _setup_multichunk(db)
+    result = _tool_session_detail(db, {"session_id": "sess-range-001", "chunk_start": 0, "chunk_end": 9999})
+    assert "End of session" in result
+    assert f"chunks 0–{n - 1}" in result
+
+
+def test_tool_session_detail_range_start_only(db):
+    """chunk_start alone reads to the end of the session."""
+    n = _setup_multichunk(db)
+    result = _tool_session_detail(db, {"session_id": "sess-range-001", "chunk_start": 2})
+    assert f"chunks 2–{n - 1}" in result
+
+
+def test_tool_session_detail_range_empty(db):
+    """start > end yields a clear empty-range message, not a crash."""
+    _setup_multichunk(db)
+    result = _tool_session_detail(db, {"session_id": "sess-range-001", "chunk_start": 3, "chunk_end": 1})
+    assert "Empty range" in result
+
+
+def test_tool_session_detail_range_has_next_pointer(db):
+    """A partial range points at the next chunk_start."""
+    _setup_multichunk(db)
+    result = _tool_session_detail(db, {"session_id": "sess-range-001", "chunk_start": 0, "chunk_end": 1})
+    assert "chunk_start=2" in result
+
+
 def test_tool_session_detail_prefix_not_found(db):
     result = _tool_session_detail(db, {"session_id": "zzzznothere"})
     assert "not found" in result.lower()
