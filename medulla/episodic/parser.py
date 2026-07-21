@@ -496,11 +496,40 @@ def _parse_kiro(path: Path, slug: str, body: str) -> ParsedSession | None:
 
 # ── Text extraction ───────────────────────────────────────────────────────────
 
+# ── conversation-text sanitization ──────────────────────────────────────────────
+# Machine boilerplate that lands inside kept user/assistant text and pollutes
+# chunks/embeddings/excerpts. Stripped at parse time; a message that is entirely
+# boilerplate collapses to "" and is dropped from the messages list.
+_SANITIZE_RES = [
+    __import__("re").compile(p, __import__("re").DOTALL) for p in (
+        r"<local-command-caveat>.*?</local-command-caveat>",
+        r"<command-name>.*?</command-name>",
+        r"<command-message>.*?</command-message>",
+        r"<command-args>.*?</command-args>",
+        r"<local-command-stdout>.*?</local-command-stdout>",
+        r"<system-reminder>.*?</system-reminder>",
+        r"\[Image #\d+\]",
+        r"\[Image: source:[^\]]*\]",
+    )
+]
+
+
+def _sanitize_text(text: str) -> str:
+    """Strip machine boilerplate; preserve real content (incl. internal newlines)."""
+    if not text:
+        return text
+    for r in _SANITIZE_RES:
+        text = r.sub("", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)     # trailing spaces on lines
+    text = re.sub(r"\n{3,}", "\n\n", text)     # collapse gaps left by removed blocks
+    return text.strip()
+
+
 def _extract_user_text(msg: dict) -> str:
     """Extract text from a user message. Skips tool_result blocks (noisy)."""
     content = msg.get("content", "")
     if isinstance(content, str):
-        return content.strip()
+        return _sanitize_text(content)
     if isinstance(content, list):
         parts = []
         for item in content:
@@ -510,7 +539,7 @@ def _extract_user_text(msg: dict) -> str:
                 if item.get("type") == "text":
                     parts.append(item.get("text", ""))
                 # skip tool_result — raw tool output, not human intent
-        return " ".join(p for p in parts if p).strip()
+        return _sanitize_text(" ".join(p for p in parts if p))
     return ""
 
 
@@ -518,7 +547,7 @@ def _extract_assistant_text(msg: dict) -> str:
     """Extract text blocks from an assistant message. Skips tool_use blocks."""
     content = msg.get("content", "")
     if isinstance(content, str):
-        return content.strip()
+        return _sanitize_text(content)
     if isinstance(content, list):
         parts = []
         for item in content:
@@ -527,7 +556,7 @@ def _extract_assistant_text(msg: dict) -> str:
             elif isinstance(item, dict) and item.get("type") == "text":
                 parts.append(item.get("text", ""))
             # skip tool_use (captured as tool_events) and tool_result
-        return " ".join(p for p in parts if p).strip()
+        return _sanitize_text(" ".join(p for p in parts if p))
     return ""
 
 
