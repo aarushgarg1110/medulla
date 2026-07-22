@@ -3,7 +3,28 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
+
+# Recency: a gentle nudge so a recent hit edges out an equally-relevant older one.
+# Weight tuned via the eval harness (#22): W=0.1 is the largest value with zero
+# regression on the labeled set (W=0.5 dropped NDCG 0.891→0.744 by burying older-
+# but-correct sessions). Re-tune here if recency-intent queries are added to the set.
+RECENCY_WEIGHT = 0.1
+RECENCY_HALFLIFE_DAYS = 30.0
+_RRF_UNIT = 1.0 / 60.0
+
+
+def _recency_boost(date_str: str | None) -> float:
+    """1.0 (now) → 0 (old), decaying with age. 0 when date is missing/unparseable."""
+    if not date_str:
+        return 0.0
+    try:
+        dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    age_days = (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0
+    return 1.0 / (1.0 + max(0.0, age_days) / RECENCY_HALFLIFE_DAYS)
 
 
 @dataclass
@@ -315,28 +336,15 @@ def hybrid_search(
         (_chunk_key(h) if "session_id" in h else h["slug"], i)
         for i, h in enumerate(vec_hits)
     ]
-    fused = _rrf_fuse(bm25_ranked, vec_ranked)
+    fused_scores = dict(_rrf_fuse(bm25_ranked, vec_ranked))
 
-    # Re-order bm25_results by fused ranking, drop items not in bm25 (vec-only hits
-    # don't have excerpts yet — BM25 guarantees text extraction)
-    key_to_result = {_result_key(r): r for r in bm25_results}
-    ordered: list[SearchResult] = []
-    seen: set[str] = set()
-    for key, _ in fused:
-        if key in key_to_result and key not in seen:
-            ordered.append(key_to_result[key])
-            seen.add(key)
-        if len(ordered) >= limit:
-            break
+    # Re-order bm25_results by fused score + a small recency boost. (Vec-only hits
+    # are dropped — BM25 guarantees the excerpt text.)
+    def _final_score(r: SearchResult) -> float:
+        return (fused_scores.get(_result_key(r), 0.0)
+                + RECENCY_WEIGHT * _recency_boost(r.date) * _RRF_UNIT)
 
-    # Append any BM25 results not reached by fused ordering
-    for r in bm25_results:
-        k = _result_key(r)
-        if k not in seen and len(ordered) < limit:
-            ordered.append(r)
-            seen.add(k)
-
-    return ordered[:limit]
+    return sorted(bm25_results, key=_final_score, reverse=True)[:limit]
 
 
 def _vec_hits_to_results(

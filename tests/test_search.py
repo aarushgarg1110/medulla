@@ -189,6 +189,33 @@ def test_search_wiki_excerpt_is_match_centered(db):
     assert "---" not in results[0].excerpt                  # frontmatter not leaked
 
 
+def test_recency_boost_pure():
+    from medulla.search import _recency_boost
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    assert _recency_boost(now) > 0.9                       # ~now
+    assert _recency_boost("2020-01-01T00:00:00Z") < 0.05   # old
+    assert _recency_boost(now) > _recency_boost("2024-01-01T00:00:00Z")
+    assert _recency_boost(None) == 0.0
+    assert _recency_boost("not-a-date") == 0.0
+
+
+def test_recency_breaks_tie_newer_first(db):
+    """Two equally-relevant sessions → the more recent ranks first (hybrid path)."""
+    from medulla.db.embedding_store import upsert_chunk_embedding
+    from medulla.search import _get_search_embedding_provider, hybrid_search
+    txt = "recencyxyz shared identical content about the topic here " * 20
+    for sid, date in [("old-sess", "2026-01-01T00:00:00Z"), ("new-sess", "2026-07-01T00:00:00Z")]:
+        s = make_session(sid, messages=[txt])
+        s.started_at = date
+        upsert_session(db, s)
+        prov = _get_search_embedding_provider()
+        for row in db.execute("SELECT chunk_index, chunk_text FROM session_chunks WHERE session_id=?", (sid,)):
+            upsert_chunk_embedding(db, sid, row["chunk_index"], prov.embed([row["chunk_text"]])[0])
+    order = [r.id for r in hybrid_search(db, "recencyxyz shared content topic", limit=10)]
+    assert order.index("new-sess") < order.index("old-sess")
+
+
 def _evt(hash_, command, tool="Bash", is_error=False, session="sess-e"):
     from medulla.episodic.parser import ToolEvent
     return ToolEvent(session_id=session, project_dir="/proj/x", event_ts="2026-01-01T00:00:00Z",
