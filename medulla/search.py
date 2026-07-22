@@ -9,14 +9,15 @@ from typing import Any
 @dataclass
 class SearchResult:
     layer: str          # episodic | semantic | codebase
-    result_type: str    # session | chunk | wiki_page
-    id: str             # session_id or wiki slug
+    result_type: str    # session | chunk | wiki_page | tool_event
+    id: str             # session_id / wiki slug; tool_event uses "{session_id}#evt{rowid}" (unique)
     title: str
-    excerpt: str        # matched text snippet
+    excerpt: str        # matched text snippet (tool_event: the command)
     project_dir: str | None
     date: str | None
     rank: float
     chunk_index: int | None = None  # set for result_type="chunk"; use with medulla_session_detail
+    is_error: bool | None = None    # set for result_type="tool_event"
 
 
 def search(
@@ -51,6 +52,9 @@ def search(
     if layer is None or layer == "episodic":
         results.extend(_search_chunks(conn, fts_query, limit))
         results.extend(_search_sessions(conn, fts_query, limit))
+        results.extend(_search_tool_events(conn, query, limit))
+    elif layer == "events":
+        results.extend(_search_tool_events(conn, query, limit))
 
     if layer is None or layer == "semantic":
         results.extend(_search_wiki(conn, fts_query, limit))
@@ -100,6 +104,46 @@ def _search_chunks(conn: sqlite3.Connection, fts_query: str, limit: int) -> list
             date=row["started_at"],
             rank=row["rank"],
             chunk_index=row["chunk_index"],
+        ))
+    return results
+
+
+_TOOL_EVENTS_CAP = 8   # supplementary — don't let commands flood conversation hits
+
+
+def _search_tool_events(conn: sqlite3.Connection, query: str, limit: int) -> list[SearchResult]:
+    """Harvested command history leg. OR-matches tokens (natural-language friendly),
+    excludes meta search-tool calls, and is capped so it supplements rather than floods."""
+    tokens = [t for t in query.split() if t]
+    if not tokens:
+        return []
+    or_query = " OR ".join(f'"{t}"' for t in tokens)
+    try:
+        rows = conn.execute("""
+            SELECT te.id AS event_id, te.session_id, te.command, te.is_error,
+                   te.project_dir, te.event_ts, tef.rank
+            FROM tool_events_fts tef
+            JOIN tool_events te ON te.rowid = tef.rowid
+            WHERE tool_events_fts MATCH ?
+              AND te.tool NOT LIKE '%search'   -- drop medulla_search / *_memory_search meta calls
+            ORDER BY tef.rank
+            LIMIT ?
+        """, (or_query, min(limit, _TOOL_EVENTS_CAP))).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+    results = []
+    for row in rows:
+        results.append(SearchResult(
+            layer="episodic",
+            result_type="tool_event",
+            id=f"{row['session_id']}#evt{row['event_id']}",   # unique → never deduped away
+            title=f"Command {row['session_id'][:8]}",
+            excerpt=row["command"] or "",
+            project_dir=row["project_dir"],
+            date=row["event_ts"],
+            rank=row["rank"],
+            is_error=bool(row["is_error"]),
         ))
     return results
 

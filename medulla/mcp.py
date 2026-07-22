@@ -33,13 +33,13 @@ _server = Server("medulla")
 _TOOLS = [
     types.Tool(
         name="medulla_search",
-        description="Search past Claude/Kiro sessions and wiki pages. Uses hybrid BM25+vector search when embeddings exist, falls back to keyword search otherwise.",
+        description="Search past Claude/Kiro sessions, wiki pages, and harvested tool/command history (SQL/duckdb/bash you've run). Uses hybrid BM25+vector search when embeddings exist, falls back to keyword search otherwise.",
         inputSchema={
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Search terms"},
                 "limit": {"type": "integer", "default": 10},
-                "layer": {"type": "string", "enum": ["episodic", "semantic", "code"], "description": "Restrict to a single layer (omit for all)"},
+                "layer": {"type": "string", "enum": ["episodic", "semantic", "code", "events"], "description": "Restrict to a single layer (omit for all). 'events' = harvested tool/command history only."},
                 "bm25_only": {"type": "boolean", "default": False, "description": "Force keyword-only search, skip vector reranking"},
             },
             "required": ["query"],
@@ -358,6 +358,12 @@ def _tool_search(conn, args: dict) -> str:
     for r in results:
         date = (r.date or "")[:10]
         proj = (r.project_dir or "").split("/")[-1]
+        if r.result_type == "tool_event":
+            sid = r.id.split("#")[0][:8]     # id is "{session_id}#evt{rowid}"
+            err = " ✗" if r.is_error else ""
+            lines.append(f"[{sid}]{err}  {date}  command  {proj}")
+            lines.append(f"  $ {_command_preview(r.excerpt)[:100]}\n")
+            continue
         lines.append(f"[{r.id[:8]}]  {date}  {r.layer}  {proj}")
         if r.chunk_index is not None:
             lines.append(f"  → medulla_session_detail(session_id=\"{r.id[:8]}\", chunk_index={r.chunk_index})")
@@ -555,16 +561,20 @@ def _tool_stats(conn) -> str:
 _TRIVIAL_LINE_RE = __import__("re").compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*$")
 
 
+_HEREDOC_OPEN_RE = __import__("re").compile(r"<<-?\s*['\"]?[A-Za-z_]\w*['\"]?\s*$")
+
+
 def _command_preview(command: str) -> str:
     """First substantive line of a (possibly multi-line) command — skip blanks,
-    comments, leading `cd`, and bare VAR=value setup lines."""
+    comments (# and --), leading `cd`, bare VAR=value setup, and heredoc openers
+    (so `duckdb << 'EOF'` shows the actual SQL line, not the opener)."""
     for ln in (command or "").splitlines():
         s = ln.strip()
-        if not s or s.startswith("#"):
+        if not s or s.startswith("#") or s.startswith("--"):
             continue
         if s.startswith("cd ") and "&&" not in s:
             continue
-        if _TRIVIAL_LINE_RE.match(s):
+        if _TRIVIAL_LINE_RE.match(s) or _HEREDOC_OPEN_RE.search(s):
             continue
         return s
     return (command or "").strip().splitlines()[0] if (command or "").strip() else ""

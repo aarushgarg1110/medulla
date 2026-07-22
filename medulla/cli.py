@@ -41,7 +41,7 @@ def scan(
 def search(
     query: Annotated[str, typer.Argument(help="Search query")],
     limit: Annotated[int, typer.Option("--limit", "-n")] = 10,
-    layer: Annotated[Optional[str], typer.Option("--layer", help="episodic | semantic | code")] = None,
+    layer: Annotated[Optional[str], typer.Option("--layer", help="episodic | semantic | code | events")] = None,
     bm25_only: Annotated[bool, typer.Option("--bm25-only", help="Force keyword-only search, skip vector reranking")] = False,
 ):
     """Search across all memory layers. Uses hybrid BM25+vector search when embeddings exist."""
@@ -56,6 +56,13 @@ def search(
         raise typer.Exit()
 
     for r in results:
+        if r.result_type == "tool_event":
+            sid = r.id.split("#")[0][:8]
+            date_str = r.date[:10] if r.date else ""
+            err = " [red]✗[/red]" if r.is_error else ""
+            console.print(f"\n[bold cyan]{sid}[/bold cyan]{err}  [dim]{date_str}  command[/dim]")
+            console.print(f"  [green]$[/green] {r.excerpt.splitlines()[0][:100] if r.excerpt else ''}")
+            continue
         if r.layer == "semantic":
             label = f"[magenta]{r.title}[/magenta]"
         else:
