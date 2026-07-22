@@ -249,7 +249,7 @@ def search_events(
         fts_q = " ".join(f'"{t}"' for t in query.split() if t)
         return conn.execute("""
             SELECT te.event_ts, te.session_id, te.tool, te.command,
-                   te.output_preview, te.is_error, tef.rank
+                   te.output_preview, te.is_error, te.interrupted, tef.rank
             FROM tool_events_fts tef
             JOIN tool_events te ON te.rowid = tef.rowid
             WHERE tool_events_fts MATCH ?
@@ -268,7 +268,7 @@ def get_next_command(
     NOT asserted as the fix (the reader judges).
     """
     return conn.execute("""
-        SELECT command, is_error FROM tool_events
+        SELECT command, is_error, event_ts FROM tool_events
         WHERE session_id = ? AND event_ts > ? AND interrupted = 0
         ORDER BY event_ts LIMIT ?
     """, (session_id, after_ts, limit)).fetchall()
