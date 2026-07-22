@@ -270,6 +270,22 @@ def test_session_detail_range_empty_errors(big_chunked_session):
     assert "Empty range" in result.output
 
 
+def test_search_command_shows_tool_event(isolated_config):
+    """CLI search surfaces harvested commands as $-prefixed tool_event rows."""
+    from medulla.db.database import connect
+    from medulla.episodic.store import upsert_tool_events
+    from medulla.episodic.parser import ToolEvent
+    conn = connect()
+    upsert_tool_events(conn, "sess-c", [ToolEvent(
+        session_id="sess-c", project_dir="/p", event_ts="2026-01-01T00:00:00Z",
+        tool="Bash", command="duckdb -c \"SELECT zebraword\"", description="",
+        output_preview="", is_error=False, event_hash="h1")])
+    conn.close()
+    result = runner.invoke(app, ["search", "zebraword", "--bm25-only"])
+    assert result.exit_code == 0
+    assert "$" in result.output and "zebraword" in result.output
+
+
 def test_search_command_excerpt_is_match_centered(claude_projects):
     """CLI search shows a match-centered excerpt containing the query term."""
     runner.invoke(app, ["scan"])

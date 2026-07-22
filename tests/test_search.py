@@ -189,6 +189,64 @@ def test_search_wiki_excerpt_is_match_centered(db):
     assert "---" not in results[0].excerpt                  # frontmatter not leaked
 
 
+def _evt(hash_, command, tool="Bash", is_error=False, session="sess-e"):
+    from medulla.episodic.parser import ToolEvent
+    return ToolEvent(session_id=session, project_dir="/proj/x", event_ts="2026-01-01T00:00:00Z",
+                     tool=tool, command=command, description="", output_preview="",
+                     is_error=is_error, event_hash=hash_)
+
+
+def test_search_includes_tool_events(db):
+    from medulla.episodic.store import upsert_tool_events
+    upsert_tool_events(db, "sess-e", [_evt("h1", "duckdb -c \"SELECT zebraword FROM t\"")])
+    te = [r for r in search(db, "zebraword") if r.result_type == "tool_event"]
+    assert te and "duckdb" in te[0].excerpt
+    assert te[0].id.startswith("sess-e#evt")   # unique id
+
+
+def test_search_tool_events_or_matching(db):
+    """Natural-language query matches a command containing only some tokens (OR, not AND)."""
+    from medulla.episodic.store import upsert_tool_events
+    upsert_tool_events(db, "sess-e", [_evt("h1", "duckdb pka benchmark halving")])
+    results = search(db, "pka benchmark duckdb query joining results")  # extra words absent
+    assert any(r.result_type == "tool_event" for r in results)
+
+
+def test_search_excludes_meta_search_tools(db):
+    from medulla.episodic.store import upsert_tool_events
+    upsert_tool_events(db, "sess-e", [
+        _evt("h1", "search zebraword", tool="mcp__medulla__medulla_events_search"),
+        _evt("h2", "grep zebraword file.py", tool="Bash"),
+    ])
+    cmds = [r.excerpt for r in search(db, "zebraword", layer="events")]
+    assert any("grep" in c for c in cmds)
+    assert not any(r_tool for r_tool in cmds if "search zebraword" == r_tool)
+
+
+def test_search_layer_events_restricts_to_commands(db):
+    from medulla.episodic.store import upsert_tool_events
+    _insert(db, "sess-conv", ["talk about zebraword " * 40] * 3)
+    upsert_tool_events(db, "sess-e", [_evt("h1", "echo zebraword")])
+    results = search(db, "zebraword", layer="events")
+    assert results and all(r.result_type == "tool_event" for r in results)
+
+
+def test_tool_event_not_deduped_against_same_session_chunk(db):
+    from medulla.episodic.store import upsert_tool_events
+    _insert(db, "sess-both", ["zebraword appears in the conversation content here " * 30])
+    upsert_tool_events(db, "sess-both", [_evt("h1", "duckdb zebraword", session="sess-both")])
+    types = {r.result_type for r in search(db, "zebraword") if r.id.startswith("sess-both")}
+    assert "tool_event" in types
+    assert types & {"chunk", "session"}   # both the conversation hit AND the command survive
+
+
+def test_search_tool_events_capped(db):
+    from medulla.episodic.store import upsert_tool_events
+    upsert_tool_events(db, "sess-e", [_evt(f"h{i}", f"duckdb zebraword run {i}") for i in range(12)])
+    results = search(db, "zebraword", layer="events", limit=10)
+    assert 0 < len(results) <= 8
+
+
 def test_search_chunk_excerpt_is_match_centered(db):
     """Chunk excerpt centers on the matched term, not the start of the chunk."""
     lead = "unrelated preamble boilerplate caveat text that starts the chunk. " * 8

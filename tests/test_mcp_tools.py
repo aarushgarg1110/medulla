@@ -629,11 +629,31 @@ def test_dispatch_unknown_tool(db):
     assert "Unknown tool" in result
 
 
+def test_tool_search_renders_tool_event(db):
+    from medulla.episodic.store import upsert_tool_events
+    from medulla.episodic.parser import ToolEvent
+    from medulla.mcp import _tool_search
+    upsert_tool_events(db, "sess-x", [ToolEvent(
+        session_id="sess-x", project_dir="/p", event_ts="2026-01-01T00:00:00Z",
+        tool="Bash", command="duckdb -c \"SELECT zebraword\"", description="",
+        output_preview="", is_error=True, event_hash="h1")])
+    out = _tool_search(db, {"query": "zebraword"})
+    assert "command" in out          # the layer label for a tool_event
+    assert "$ duckdb" in out         # command shown
+    assert "✗" in out                # error flagged
+
+
 def test_command_preview_skips_setup_lines():
     from medulla.mcp import _command_preview
     assert _command_preview("cd /x\n# note\nDB=y\npython run.py") == "python run.py"
     assert _command_preview("cd /only") == "cd /only"   # all-trivial → first line fallback
     assert _command_preview("") == ""
+
+
+def test_command_preview_skips_heredoc_and_sql_comments():
+    from medulla.mcp import _command_preview
+    cmd = "duckdb << 'EOF'\n-- join benchmark csv\nSELECT * FROM t LIMIT 2\nEOF"
+    assert _command_preview(cmd) == "SELECT * FROM t LIMIT 2"
 
 
 def test_events_search_preview_shows_substantive_line(db):
