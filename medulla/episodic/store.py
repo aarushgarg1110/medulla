@@ -120,11 +120,12 @@ def upsert_tool_events(
         conn.execute("""
             INSERT OR IGNORE INTO tool_events
                 (event_ts, session_id, project_dir, tool, command,
-                 output_preview, is_error, event_hash)
-            VALUES (?,?,?,?,?,?,?,?)
+                 output_preview, is_error, interrupted, event_hash)
+            VALUES (?,?,?,?,?,?,?,?,?)
         """, (
             e.event_ts, e.session_id, e.project_dir, e.tool, e.command,
-            e.output_preview, 1 if e.is_error else 0, e.event_hash,
+            e.output_preview, 1 if e.is_error else 0, 1 if e.interrupted else 0,
+            e.event_hash,
         ))
     conn.commit()
 
@@ -256,6 +257,21 @@ def search_events(
         """, (fts_q, limit)).fetchall()
     except Exception:
         return []
+
+
+def get_next_command(
+    conn: sqlite3.Connection, session_id: str, after_ts: str, limit: int = 1
+) -> list[sqlite3.Row]:
+    """The next non-aborted command(s) in a session after a timestamp.
+
+    Used to show 'what ran next' after a failed command — surfaced as context,
+    NOT asserted as the fix (the reader judges).
+    """
+    return conn.execute("""
+        SELECT command, is_error FROM tool_events
+        WHERE session_id = ? AND event_ts > ? AND interrupted = 0
+        ORDER BY event_ts LIMIT ?
+    """, (session_id, after_ts, limit)).fetchall()
 
 
 def get_stats(conn: sqlite3.Connection) -> dict:
