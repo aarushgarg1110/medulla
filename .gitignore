@@ -25,6 +25,11 @@ sanity-output/
 notes/
 reflections/
 
+# Eval sets are private (real queries + session ids from your own memory).
+# Only the synthetic eval_set.example.json is committed.
+eval_set.json
+*.eval_set.json
+
 # Claude Code local config + instructions (personal, not for publish)
 .claude/
 CLAUDE.md

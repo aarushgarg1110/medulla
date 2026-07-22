@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from typing import Annotated, Optional
 import typer
 from rich.console import Console
@@ -72,6 +73,63 @@ def search(
             label = f"[bold cyan]{r.id[:8]}[/bold cyan]  [dim]{date_str}  {proj}[/dim]{chunk_hint}"
         console.print(f"\n{label}")
         console.print(f"  [italic]{r.excerpt}[/italic]")
+
+
+# ── eval ─────────────────────────────────────────────────────────────────────
+
+@app.command(name="eval")
+def eval_command(
+    test_set: Annotated[Optional[Path], typer.Argument(
+        help="Eval set JSON (default: <MEDULLA_DIR>/eval_set.json)")] = None,
+    k: Annotated[int, typer.Option("--k", help="Cutoff for NDCG@k")] = 5,
+):
+    """Evaluate search quality (NDCG@k, MRR) over a labeled query set."""
+    import json
+    from medulla.db.database import connect
+    from medulla.config import get_config
+    from medulla.eval import run_eval
+
+    path = test_set or (get_config().medulla_dir / "eval_set.json")
+    if not path.exists():
+        console.print(f"[red]No eval set at {path}[/red]")
+        console.print('Create one, e.g.: [{"query": "logD outliers", "relevant": ["<session_id>"]}]')
+        raise typer.Exit(1)
+    cases = json.loads(path.read_text())
+
+    report = run_eval(connect(), cases, k=k)
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Query", width=44)
+    table.add_column(f"NDCG@{k}", justify="right", width=8)
+    table.add_column("MRR", justify="right", width=6)
+    table.add_column("hits", justify="right", width=6)
+    for r in report["per_query"]:
+        table.add_row(r["query"][:44], f"{r['ndcg']:.3f}", f"{r['mrr']:.3f}",
+                      f"{r['hits']}/{r['relevant']}")
+    console.print(table)
+    console.print(f"\n[bold]NDCG@{k}: {report['ndcg']:.3f}   MRR: {report['mrr']:.3f}[/bold]"
+                  f"   [dim]({report['n']} queries)[/dim]")
+
+
+@app.command(name="eval-gen")
+def eval_gen_command(
+    mode: Annotated[str, typer.Option("--mode", help="known-item (auto-labeled) | history (real queries, hand-label)")] = "known-item",
+    n: Annotated[int, typer.Option("--n", help="Number of cases to generate")] = 20,
+    out: Annotated[Optional[Path], typer.Option("--out", help="Write JSON here (default: stdout)")] = None,
+):
+    """Generate eval-set candidates from your local DB (private — never commit real sets)."""
+    import json
+    from medulla.db.database import connect
+    from medulla.eval_gen import generate
+
+    cases = generate(connect(), mode=mode, n=n)
+    text = json.dumps(cases, indent=2)
+    if out:
+        out.write_text(text)
+        console.print(f"Wrote [cyan]{len(cases)}[/cyan] {mode} case(s) to {out}")
+        if mode == "history":
+            console.print("[dim]Fill in each case's 'relevant' from its 'candidates' before running eval.[/dim]")
+    else:
+        console.print(text)
 
 
 # ── list ───────────────────────────────────────────────────────────────────────

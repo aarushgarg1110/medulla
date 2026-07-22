@@ -1,0 +1,17 @@
+[
+  {
+    "query": "how did we fix the flaky login test",
+    "relevant": ["a1b2c3d4"],
+    "_note": "relevant = session id(s) that should surface; 8-char prefixes (as printed by `medulla search`) are fine"
+  },
+  {
+    "query": "database migration rollback plan",
+    "relevant": ["e5f6a7b8", "c9d0e1f2"],
+    "layer": "episodic"
+  },
+  {
+    "query": "the duckdb query we ran against the metrics csv",
+    "relevant": ["a1b2c3d4"],
+    "layer": "events"
+  }
+]
