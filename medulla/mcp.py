@@ -559,6 +559,30 @@ def _tool_stats(conn) -> str:
 
 
 _TRIVIAL_LINE_RE = __import__("re").compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*$")
+_RUNNERS = {"uv", "run", "python", "python3", "bash", "sh", "time", "sudo", "env",
+            "poetry", "npx", "node"}
+_ABORT_FOLLOWUP_WINDOW_S = 300   # a fix-after-abort follows quickly
+
+
+def _command_family(command: str) -> str:
+    """Deterministic 'family' key: the invoked script/binary after stripping runner
+    prefixes (uv run, python, …). '' if none. Used only to gate adjacency display —
+    never to assert intent."""
+    toks = [t for t in _command_preview(command).split() if t]
+    i = 0
+    while i < len(toks) and toks[i].lower() in _RUNNERS:
+        i += 1
+    return toks[i].lower() if i < len(toks) else ""
+
+
+def _within_seconds(ts_a: str, ts_b: str, secs: int) -> bool:
+    from datetime import datetime
+    try:
+        a = datetime.fromisoformat((ts_a or "").replace("Z", "+00:00"))
+        b = datetime.fromisoformat((ts_b or "").replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return False
+    return 0 <= (b - a).total_seconds() <= secs
 
 
 _HEREDOC_OPEN_RE = __import__("re").compile(r"<<-?\s*['\"]?[A-Za-z_]\w*['\"]?\s*$")
@@ -594,11 +618,19 @@ def _tool_events_search(conn, args: dict) -> str:
         lines.append(f"  {(r['event_ts'] or '')[:16]}{err}  {r['tool']}  {_command_preview(r['command'])[:80]}")
         if r["output_preview"]:
             lines.append(f"    → {r['output_preview'][:60]}")
-        # For a failure, show what ran next in that session — context, not an asserted fix.
+        # Failure → what ran next (context, not an asserted fix).
         if r["is_error"]:
             nxt = get_next_command(conn, r["session_id"], r["event_ts"], limit=1)
             if nxt:
                 lines.append(f"    ↳ next in session: {_command_preview(nxt[0]['command'])[:70]}")
+        # Abort → what ran INSTEAD, but only when the next command is the SAME family
+        # within a short window (deterministic gates). Adjacency, not a fix claim.
+        elif r["interrupted"]:
+            nxt = get_next_command(conn, r["session_id"], r["event_ts"], limit=1)
+            if (nxt and _command_family(r["command"])
+                    and _command_family(nxt[0]["command"]) == _command_family(r["command"])
+                    and _within_seconds(r["event_ts"], nxt[0]["event_ts"], _ABORT_FOLLOWUP_WINDOW_S)):
+                lines.append(f"    ↳ ran instead: {_command_preview(nxt[0]['command'])[:70]}")
     return "\n".join(lines)
 
 
