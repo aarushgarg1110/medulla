@@ -587,12 +587,18 @@ def _tool_events_search(conn, args: dict) -> str:
     rows = search_events(conn, query, limit=args.get("limit", 20))
     if not rows:
         return f"No tool events found for: {query}"
+    from medulla.episodic.store import get_next_command
     lines = [f"{len(rows)} event(s):\n"]
     for r in rows:
         err = " ✗" if r["is_error"] else ""
         lines.append(f"  {(r['event_ts'] or '')[:16]}{err}  {r['tool']}  {_command_preview(r['command'])[:80]}")
         if r["output_preview"]:
             lines.append(f"    → {r['output_preview'][:60]}")
+        # For a failure, show what ran next in that session — context, not an asserted fix.
+        if r["is_error"]:
+            nxt = get_next_command(conn, r["session_id"], r["event_ts"], limit=1)
+            if nxt:
+                lines.append(f"    ↳ next in session: {_command_preview(nxt[0]['command'])[:70]}")
     return "\n".join(lines)
 
 

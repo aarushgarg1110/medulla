@@ -67,6 +67,7 @@ class ToolEvent:
     output_preview: str
     is_error: bool
     event_hash: str
+    interrupted: bool = False
 
 
 def is_subagent_file(path: Path) -> bool:
@@ -104,18 +105,60 @@ def _is_trivial_command(cmd: str) -> bool:
 def _result_output(block: dict, tool_use_result: object) -> str:
     if isinstance(tool_use_result, dict):
         return str(tool_use_result.get("stdout") or tool_use_result.get("stderr") or "")
+    return _block_text(block)
+
+
+def _block_text(block: dict) -> str:
     content = block.get("content")
     if isinstance(content, list):
         return " ".join(x.get("text", "") for x in content if isinstance(x, dict))
     return str(content or "")
 
 
+_BG_ID_RE = re.compile(r"running in background with ID:\s*(\w+)")
+_TASK_ID_RE = re.compile(r"<task-id>(\w+)</task-id>")
+_EXIT_RE = re.compile(r"exit code (\d+)")
+_ABORT_MARKERS = (
+    "tool use was rejected", "user doesn't want to proceed",
+    "[Request interrupted", "Request interrupted by user",
+)
+
+
+def _looks_aborted(text: str) -> bool:
+    return any(m in text for m in _ABORT_MARKERS)
+
+
+def _task_notifications(nodes: list[dict]) -> dict[str, bool]:
+    """task_id → is_error, parsed from <task-notification> messages (exit code != 0)."""
+    out: dict[str, bool] = {}
+    for node in nodes:
+        msg = node.get("message", {})
+        content = msg.get("content") if isinstance(msg, dict) else None
+        texts: list[str] = []
+        if isinstance(content, str):
+            texts.append(content)
+        elif isinstance(content, list):
+            texts += [b.get("text", "") for b in content if isinstance(b, dict)]
+        for t in texts:
+            if "task-notification" not in t:
+                continue
+            tid = _TASK_ID_RE.search(t)
+            if tid:
+                ec = _EXIT_RE.search(t)
+                out[tid.group(1)] = bool(ec and ec.group(1) != "0")
+    return out
+
+
 def extract_tool_events(path: Path) -> list[ToolEvent]:
     """Harvest tool_use/tool_result pairs from a session JSONL into ToolEvents.
 
-    Commands and outputs are secret-scrubbed; trivial `cd`/assignments are dropped.
-    Subagent files are skipped (harvested with their parent session's scan cycle
-    is out of scope for v1).
+    Outcomes are corrected beyond the raw tool_result:
+      - background/Monitor commands take their real exit status from the matching
+        <task-notification> (joined by task-id);
+      - user-aborted/rejected/interrupted calls are flagged `interrupted` and NOT
+        counted as `is_error` (an abort is a choice, not a fixable failure).
+    Commands/outputs are secret-scrubbed; trivial `cd`/assignments are dropped;
+    subagent files are skipped (v1).
     """
     if is_subagent_file(path):
         return []
@@ -124,17 +167,14 @@ def extract_tool_events(path: Path) -> list[ToolEvent]:
     except OSError:
         return []
 
+    nodes = [n for n in (_read_json(ln.strip()) for ln in body.splitlines() if ln.strip()) if n]
+    notifs = _task_notifications(nodes)
+
     session_id = path.stem
     uses: dict[str, tuple[str, object, str | None, str | None]] = {}
     events: list[ToolEvent] = []
 
-    for raw_line in body.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        node = _read_json(line)
-        if node is None:
-            continue
+    for node in nodes:
         if node.get("sessionId"):
             session_id = node["sessionId"]
         ts = node.get("timestamp")
@@ -161,6 +201,22 @@ def extract_tool_events(path: Path) -> list[ToolEvent]:
                 if _is_trivial_command(cmd):
                     continue
                 desc = inp.get("description", "") if isinstance(inp, dict) else ""
+                result_text = _block_text(block)
+
+                is_error = bool(block.get("is_error"))
+                interrupted = bool(isinstance(tool_use_result, dict)
+                                   and tool_use_result.get("interrupted"))
+                if _looks_aborted(result_text):
+                    interrupted = True
+
+                bg = _BG_ID_RE.search(result_text)
+                if bg:
+                    # the "started" result says nothing — real outcome is the notification
+                    is_error = notifs.get(bg.group(1), False)
+                    interrupted = False
+                if interrupted:
+                    is_error = False   # an abort is not a failure to learn from
+
                 events.append(ToolEvent(
                     session_id=session_id,
                     project_dir=use_proj,
@@ -169,7 +225,8 @@ def extract_tool_events(path: Path) -> list[ToolEvent]:
                     command=scrub_secrets(cmd)[:500],
                     description=(desc or "")[:200],
                     output_preview=scrub_secrets(_result_output(block, tool_use_result))[:200],
-                    is_error=bool(block.get("is_error")),
+                    is_error=is_error,
+                    interrupted=interrupted,
                     event_hash=hashlib.sha256(f"{session_id}:{tid}".encode()).hexdigest(),
                 ))
     return events
