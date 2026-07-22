@@ -183,6 +183,84 @@ def test_search_events_flags_error(db):
 
 # ── scanner integration ───────────────────────────────────────────────────────
 
+def test_v7_interrupted_column(db):
+    cols = {r[1] for r in db.execute("PRAGMA table_info(tool_events)").fetchall()}
+    assert "interrupted" in cols
+
+
+def test_abort_not_counted_as_error(tmp_path):
+    p = tmp_path / "s.jsonl"
+    _write_session(p, _bash("tu1", "rm -rf /x"),
+                   [{"type": "text", "text": "The user doesn't want to proceed. The tool use was rejected"}],
+                   is_error=True)
+    e = extract_tool_events(p)[0]
+    assert e.interrupted is True and e.is_error is False
+
+
+def test_tooluseresult_interrupted_flag(tmp_path):
+    p = tmp_path / "s.jsonl"
+    _write_session(p, _bash("tu1", "sleep 999"), [{"type": "text", "text": "..."}],
+                   is_error=True, tool_use_result={"interrupted": True, "stdout": ""})
+    e = extract_tool_events(p)[0]
+    assert e.interrupted is True and e.is_error is False
+
+
+def _bg_session(p, exit_code):
+    lines = [
+        _rec(type="assistant", sessionId="s1", cwd="/p", timestamp="2026-01-01T10:00:01Z",
+             message={"role": "assistant", "content": [_bash("tu1", "medulla scan --force bgmarker")]}),
+        _rec(type="user", sessionId="s1", cwd="/p", timestamp="2026-01-01T10:00:02Z",
+             message={"role": "user", "content": [
+                 {"type": "tool_result", "tool_use_id": "tu1", "is_error": False,
+                  "content": [{"type": "text", "text": "Command running in background with ID: bg777"}]}]}),
+        _rec(type="user", sessionId="s1", timestamp="2026-01-01T10:05:00Z",
+             message={"role": "user",
+                      "content": f"<task-notification>\n<task-id>bg777</task-id>\n<status>completed</status> (exit code {exit_code})\n</task-notification>"}),
+    ]
+    p.write_text("\n".join(lines))
+
+
+def test_background_failure_from_notification(tmp_path):
+    p = tmp_path / "s.jsonl"
+    _bg_session(p, exit_code=2)
+    e = [ev for ev in extract_tool_events(p) if "bgmarker" in ev.command][0]
+    assert e.is_error is True   # real outcome (exit 2) from the task-notification
+
+
+def test_background_success_from_notification(tmp_path):
+    p = tmp_path / "s.jsonl"
+    _bg_session(p, exit_code=0)
+    e = [ev for ev in extract_tool_events(p) if "bgmarker" in ev.command][0]
+    assert e.is_error is False
+
+
+def _te(hash_, ts, command, is_error=False, interrupted=False, session="s1"):
+    return ToolEvent(session_id=session, project_dir="/p", event_ts=ts, tool="Bash",
+                     command=command, description="", output_preview="", is_error=is_error,
+                     event_hash=hash_, interrupted=interrupted)
+
+
+def test_get_next_command_skips_interrupted(db):
+    from medulla.episodic.store import get_next_command
+    upsert_tool_events(db, "s1", [
+        _te("h1", "2026-01-01T00:00:01Z", "fail cmd", is_error=True),
+        _te("h2", "2026-01-01T00:00:02Z", "aborted cmd", interrupted=True),
+        _te("h3", "2026-01-01T00:00:03Z", "the fix cmd"),
+    ])
+    nxt = get_next_command(db, "s1", "2026-01-01T00:00:01Z", limit=1)
+    assert nxt and nxt[0]["command"] == "the fix cmd"   # skipped the aborted one
+
+
+def test_events_search_shows_next_after_failure(db):
+    from medulla.mcp import _tool_events_search
+    upsert_tool_events(db, "s1", [
+        _te("h1", "2026-01-01T00:00:01Z", "uv run evaluation.py zebrafail", is_error=True),
+        _te("h2", "2026-01-01T00:00:02Z", "uv run evaluation.py zebrafail --eval_path x"),
+    ])
+    out = _tool_events_search(db, {"query": "zebrafail"})
+    assert "next in session" in out and "--eval_path" in out
+
+
 def test_scan_populates_tool_events(db, tmp_path, monkeypatch):
     import medulla.episodic.scanner as scanner
     monkeypatch.setattr(scanner, "_embed_session_chunks", lambda conn, sid: None)
