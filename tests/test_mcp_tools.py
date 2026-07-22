@@ -643,6 +643,60 @@ def test_tool_search_renders_tool_event(db):
     assert "✗" in out                # error flagged
 
 
+def test_command_family_strips_runners():
+    from medulla.mcp import _command_family
+    assert _command_family("uv run evaluation.py --x") == "evaluation.py"
+    assert _command_family("duckdb -c 'SELECT 1'") == "duckdb"
+    assert _command_family("aws sagemaker describe") == "aws"
+    assert _command_family("") == ""
+
+
+def test_within_seconds():
+    from medulla.mcp import _within_seconds
+    assert _within_seconds("2026-01-01T00:00:00Z", "2026-01-01T00:04:00Z", 300) is True
+    assert _within_seconds("2026-01-01T00:00:00Z", "2026-01-01T00:10:00Z", 300) is False
+    assert _within_seconds("2026-01-01T00:00:00Z", "bad", 300) is False
+    assert _within_seconds(None, "2026-01-01T00:00:00Z", 300) is False
+
+
+def _ev(hash_, ts, command, interrupted=False, is_error=False, session="s1"):
+    from medulla.episodic.parser import ToolEvent
+    return ToolEvent(session_id=session, project_dir="/p", event_ts=ts, tool="Bash",
+                     command=command, description="", output_preview="", is_error=is_error,
+                     event_hash=hash_, interrupted=interrupted)
+
+
+def test_events_search_ran_instead_same_family_in_window(db):
+    from medulla.episodic.store import upsert_tool_events
+    from medulla.mcp import _tool_events_search
+    upsert_tool_events(db, "s1", [
+        _ev("h1", "2026-01-01T00:00:00Z", "uv run evaluation.py zebraX", interrupted=True),
+        _ev("h2", "2026-01-01T00:01:00Z", "uv run evaluation.py zebraX --eval_path fix"),
+    ])
+    out = _tool_events_search(db, {"query": "zebraX"})
+    assert "ran instead" in out and "--eval_path" in out
+
+
+def test_events_search_no_ran_instead_different_family(db):
+    from medulla.episodic.store import upsert_tool_events
+    from medulla.mcp import _tool_events_search
+    upsert_tool_events(db, "s1", [
+        _ev("h1", "2026-01-01T00:00:00Z", "duckdb zebraY select", interrupted=True),
+        _ev("h2", "2026-01-01T00:01:00Z", "aws zebraY describe"),   # different family
+    ])
+    assert "ran instead" not in _tool_events_search(db, {"query": "zebraY"})
+
+
+def test_events_search_no_ran_instead_outside_window(db):
+    from medulla.episodic.store import upsert_tool_events
+    from medulla.mcp import _tool_events_search
+    upsert_tool_events(db, "s1", [
+        _ev("h1", "2026-01-01T00:00:00Z", "duckdb zebraZ select", interrupted=True),
+        _ev("h2", "2026-01-01T02:00:00Z", "duckdb zebraZ select --fix"),  # 2h later
+    ])
+    assert "ran instead" not in _tool_events_search(db, {"query": "zebraZ"})
+
+
 def test_command_preview_skips_setup_lines():
     from medulla.mcp import _command_preview
     assert _command_preview("cd /x\n# note\nDB=y\npython run.py") == "python run.py"
