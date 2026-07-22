@@ -130,3 +130,42 @@ def test_eval_command_missing_file_errors(tmp_path, monkeypatch):
     result = _runner.invoke(app, ["eval", str(tmp_path / "nope.json")])
     assert result.exit_code == 1
     assert "No eval set" in result.output
+
+
+def _cfg(tmp_path, monkeypatch):
+    import medulla.config as cfg
+    medulla_dir = tmp_path / ".medulla"
+    medulla_dir.mkdir()
+    cfg._config = None
+    monkeypatch.setattr(cfg, "_config", cfg.Config(medulla_dir=medulla_dir))
+    return medulla_dir
+
+
+def test_eval_gen_command_known_item_stdout(tmp_path, monkeypatch):
+    from medulla.db.database import connect
+    _cfg(tmp_path, monkeypatch)
+    conn = connect(); _seed(conn); conn.close()
+    result = _runner.invoke(app, ["eval-gen", "--mode", "known-item", "--n", "3"])
+    assert result.exit_code == 0
+    assert '"query"' in result.output and '"relevant"' in result.output
+
+
+def test_eval_gen_command_history_to_file(tmp_path, monkeypatch):
+    from medulla.db.database import connect
+    from medulla.episodic.store import upsert_tool_events
+    from medulla.episodic.parser import ToolEvent
+    _cfg(tmp_path, monkeypatch)
+    conn = connect()
+    _seed(conn)
+    upsert_tool_events(conn, "s1", [ToolEvent(
+        session_id="s1", project_dir="/p", event_ts="2026-01-01T00:00:00Z",
+        tool="mcp__medulla__medulla_search", command="mcp__medulla__medulla_search logD lipophilicity outlier",
+        description="", output_preview="", is_error=False, event_hash="h1")])
+    conn.close()
+    out = tmp_path / "hist.json"
+    result = _runner.invoke(app, ["eval-gen", "--mode", "history", "--n", "5", "--out", str(out)])
+    assert result.exit_code == 0
+    assert out.exists()
+    cases = json.loads(out.read_text())
+    assert any("logD" in c["query"] for c in cases)
+    assert "hand-label" in result.output.lower() or "Fill in" in result.output

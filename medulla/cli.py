@@ -110,6 +110,28 @@ def eval_command(
                   f"   [dim]({report['n']} queries)[/dim]")
 
 
+@app.command(name="eval-gen")
+def eval_gen_command(
+    mode: Annotated[str, typer.Option("--mode", help="known-item (auto-labeled) | history (real queries, hand-label)")] = "known-item",
+    n: Annotated[int, typer.Option("--n", help="Number of cases to generate")] = 20,
+    out: Annotated[Optional[Path], typer.Option("--out", help="Write JSON here (default: stdout)")] = None,
+):
+    """Generate eval-set candidates from your local DB (private — never commit real sets)."""
+    import json
+    from medulla.db.database import connect
+    from medulla.eval_gen import generate
+
+    cases = generate(connect(), mode=mode, n=n)
+    text = json.dumps(cases, indent=2)
+    if out:
+        out.write_text(text)
+        console.print(f"Wrote [cyan]{len(cases)}[/cyan] {mode} case(s) to {out}")
+        if mode == "history":
+            console.print("[dim]Fill in each case's 'relevant' from its 'candidates' before running eval.[/dim]")
+    else:
+        console.print(text)
+
+
 # ── list ───────────────────────────────────────────────────────────────────────
 
 @app.command(name="list")
