@@ -11,7 +11,14 @@ shifts so chunks stay coherent:
     reached MIN_CHUNK_CHARS *and* the dip is sustained for SHIFT_DEBOUNCE windows —
     this stops transient vocabulary dips from shredding a session into tiny chunks.
 
-Undersized trailing chunks are merged back into their predecessor.
+Undersized trailing chunks are merged back into their predecessor, but only when
+the merge fits under the cap — a merge that would overflow is declined, since a
+slightly-small chunk is better than a truncated one.
+
+Content is never dropped: a span whose joined text still exceeds the cap (a single
+oversized message, or a fixed-window join) is *split* into consecutive chunks
+rather than truncated. Sibling pieces share the turn range they came from and
+differ only by chunk_index.
 
 History: Sprint 1 used a fixed TURNS_PER_CHUNK window; Sprint 2 switched to
 vocabulary-divergence cuts but over-segmented badly (one real session produced
@@ -65,21 +72,64 @@ def chunk_messages(
     return _chunk_fixed(messages, turns_per_chunk)
 
 
+def _split_oversized(text: str, max_chars: int) -> list[str]:
+    """Break text into consecutive pieces of at most max_chars, losing no content.
+
+    Cuts at the last whitespace inside the window so words stay intact; falls back
+    to a hard cut when a single run has no whitespace (minified JSON, a base64 blob).
+    Only the whitespace character at a cut point is consumed.
+    """
+    if len(text) <= max_chars:
+        return [text]
+    pieces: list[str] = []
+    start = 0
+    n = len(text)
+    while True:                    # always exits below, once the remainder fits
+        if n - start <= max_chars:
+            pieces.append(text[start:])
+            break
+        # rfind lower bound is start+1 so a cut always advances past `start`.
+        cut = text.rfind(" ", start + 1, start + max_chars + 1)
+        if cut == -1:
+            cut = start + max_chars
+            pieces.append(text[start:cut])
+            start = cut
+        else:
+            pieces.append(text[start:cut])
+            start = cut + 1        # drop the single space we cut on
+    return pieces
+
+
+def _materialize(
+    messages: list[str],
+    bounds: list[tuple[int, int]],
+    max_chars: int,
+) -> list[Chunk]:
+    """Turn (start, end_exclusive) spans into Chunks, splitting any span over the cap.
+
+    The single place chunk_text is produced, so no code path can truncate. Pieces of
+    one span share turn_start/turn_end and take consecutive chunk_index values.
+    """
+    chunks: list[Chunk] = []
+    for s, e in bounds:
+        text = " ".join(messages[s:e])
+        for piece in _split_oversized(text, max_chars):
+            chunks.append(Chunk(
+                chunk_index=len(chunks),
+                chunk_text=piece,
+                turn_start=s,
+                turn_end=e - 1,
+            ))
+    return chunks
+
+
 def _chunk_fixed(messages: list[str], turns_per_chunk: int) -> list[Chunk]:
     """Fixed-window fallback."""
-    chunks: list[Chunk] = []
-    i = 0
-    while i < len(messages):
-        window = messages[i: i + turns_per_chunk]
-        text = " ".join(window)
-        chunks.append(Chunk(
-            chunk_index=len(chunks),
-            chunk_text=text[:MAX_CHUNK_CHARS],
-            turn_start=i,
-            turn_end=min(i + turns_per_chunk, len(messages)) - 1,
-        ))
-        i += turns_per_chunk
-    return chunks
+    bounds = [
+        (i, min(i + turns_per_chunk, len(messages)))
+        for i in range(0, len(messages), turns_per_chunk)
+    ]
+    return _materialize(messages, bounds, MAX_CHUNK_CHARS)
 
 
 def _chunk_by_topic(
@@ -148,17 +198,9 @@ def _chunk_by_topic(
     if start < n:
         bounds.append((start, n))
 
-    bounds = _merge_undersized(messages, bounds, merge_floor)
+    bounds = _merge_undersized(messages, bounds, merge_floor, max_chars)
 
-    chunks = [
-        Chunk(
-            chunk_index=idx,
-            chunk_text=" ".join(messages[s:e])[:max_chars],
-            turn_start=s,
-            turn_end=e - 1,
-        )
-        for idx, (s, e) in enumerate(bounds)
-    ]
+    chunks = _materialize(messages, bounds, max_chars)
     return chunks if chunks else _chunk_fixed(messages, TURNS_PER_CHUNK)
 
 
@@ -166,23 +208,32 @@ def _merge_undersized(
     messages: list[str],
     bounds: list[tuple[int, int]],
     min_chars: int,
+    max_chars: int,
 ) -> list[tuple[int, int]]:
-    """Fold any chunk below min_chars into its predecessor (or successor if first)."""
+    """Fold any chunk below min_chars into its predecessor (or successor if first).
+
+    A merge that would push the combined span past max_chars is declined — it would
+    only be split straight back apart, and pre-#58 it silently truncated the tail.
+    """
     if len(bounds) <= 1:
         return bounds
+
+    def span_size(s: int, e: int) -> int:
+        return sum(len(messages[k]) + 1 for k in range(s, e))
+
     merged: list[tuple[int, int]] = []
     for s, e in bounds:
-        size = sum(len(messages[k]) + 1 for k in range(s, e))
-        if size < min_chars and merged:
+        if merged and span_size(s, e) < min_chars:
             ps, _ = merged[-1]
-            merged[-1] = (ps, e)          # extend previous chunk
-        else:
-            merged.append((s, e))
+            if span_size(ps, e) <= max_chars:
+                merged[-1] = (ps, e)      # extend previous chunk
+                continue
+        merged.append((s, e))
     # If the very first chunk was undersized it stayed as-is; fold it forward.
     if len(merged) > 1:
         s0, e0 = merged[0]
-        if sum(len(messages[k]) + 1 for k in range(s0, e0)) < min_chars:
-            s1, e1 = merged[1]
+        s1, e1 = merged[1]
+        if span_size(s0, e0) < min_chars and span_size(s0, e1) <= max_chars:
             merged[0:2] = [(s0, e1)]
     return merged
 
