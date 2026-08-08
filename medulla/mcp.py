@@ -12,7 +12,7 @@ from typing import Any
 
 import anyio
 import mcp.types as types
-from mcp.server import Server
+from mcp.server import Server, ServerRequestContext
 from mcp.server.stdio import stdio_server
 
 from medulla.db.database import connect
@@ -287,15 +287,38 @@ _TOOLS = [
 ]
 
 
-@_server.list_tools()
-async def list_tools() -> list[types.Tool]:  # pragma: no cover
-    return _TOOLS
+async def list_tools(
+    ctx: ServerRequestContext[Any],
+    params: types.PaginatedRequestParams | None = None,
+) -> types.ListToolsResult:
+    return types.ListToolsResult(tools=_TOOLS)
 
 
-@_server.call_tool()
-async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextContent]:  # pragma: no cover
-    text = _dispatch(name, arguments)
-    return [types.TextContent(type="text", text=text)]
+async def call_tool(
+    ctx: ServerRequestContext[Any],
+    params: types.CallToolRequestParams,
+) -> types.CallToolResult:
+    # A raised exception would become a JSON-RPC *protocol* error, which Claude
+    # surfaces as a dead tool rather than a readable message. Keep every failure
+    # inside a normal result with is_error, so one bad tool never looks like a
+    # broken server.
+    try:
+        text = _dispatch(params.name, params.arguments or {})
+        is_error = False
+    except Exception as e:
+        text = f"{params.name} failed: {type(e).__name__}: {e}"
+        is_error = True
+    return types.CallToolResult(
+        content=[types.TextContent(type="text", text=text)],
+        is_error=is_error,
+    )
+
+
+# SDK 2.0 removed the @server.list_tools()/@server.call_tool() decorators in
+# favour of explicit registration; handlers now take (ctx, params) and return a
+# full Result object instead of a bare list.
+_server.add_request_handler("tools/list", types.PaginatedRequestParams, list_tools)
+_server.add_request_handler("tools/call", types.CallToolRequestParams, call_tool)
 
 
 # ── Tool dispatch ──────────────────────────────────────────────────────────────

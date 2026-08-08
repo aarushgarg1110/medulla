@@ -9,7 +9,11 @@ dependencies = [
     "anyio>=4.13.0",
     "boto3>=1.43.12",
     "httpx>=0.28.1",
-    "mcp>=1.27.1",
+    # 2.0 removed the lowlevel decorator API (@server.list_tools/@server.call_tool)
+    # that medulla/mcp.py used; the handlers there are now registered via
+    # add_request_handler, which does not exist on 1.x. Pin the floor at 2.0 and
+    # cap the next major so a future 3.0 cannot silently break the server again.
+    "mcp>=2.0.0,<3",
     "pymupdf>=1.27.2.3",
     "rich>=15.0.0",
     "sentence-transformers>=5.5.1",
