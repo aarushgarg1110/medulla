@@ -3,7 +3,7 @@ name = "medulla"
 version = "0.1.0"
 description = "Three-layer memory for Claude Code and Kiro — episodic, semantic, codebase"
 readme = "README.md"
-requires-python = ">=3.12,<3.14"
+requires-python = "==3.12.*"
 dependencies = [
     "anthropic>=0.103.1",
     "anyio>=4.13.0",
