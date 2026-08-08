@@ -1,16 +1,8 @@
-"""Protocol-level tests for the MCP server.
+"""Protocol-level tests: drive the real Server over an in-memory transport.
 
-test_mcp_tools.py covers tool *logic* by calling `_dispatch`/`_HANDLERS`
-directly. That left the SDK-facing layer — tool registration, the handler
-signatures, the result shapes — completely untested. When mcp 2.0 removed the
-`@server.list_tools()`/`@server.call_tool()` decorators, `medulla/mcp.py` began
-raising AttributeError at import time and `medulla mcp` died before answering
-`initialize`, yet the entire suite stayed green because nothing here ever built
-a Server.
-
-These tests drive the real Server object over an in-memory transport, so the
-next time the SDK moves the registration API underneath us it fails loudly and
-in CI rather than silently in every user's editor.
+test_mcp_tools.py only calls _dispatch/_HANDLERS, so it stays green even when the
+SDK-facing layer is dead. These cover registration, handler signatures and result
+shapes, which is what an SDK upgrade actually breaks.
 """
 from __future__ import annotations
 
@@ -53,12 +45,7 @@ async def _connected_session():
 
 @pytest.fixture
 def patched_conn(db, monkeypatch):
-    """Point the server's module-global connection at the test DB.
-
-    `_dispatch` resolves its connection through `_get_conn()`, which memoises a
-    real `connect()`. Without this the protocol tests would read the developer's
-    live medulla.db.
-    """
+    """Without this, _get_conn() would memoise a real connect() to the live medulla.db."""
     monkeypatch.setattr(mcp_mod, "_conn", db)
     return db
 
@@ -123,11 +110,7 @@ def test_unknown_tool_is_reported_not_raised(patched_conn):
 
 
 def test_handler_exception_becomes_error_result(patched_conn, monkeypatch):
-    """A raising handler yields is_error, keeping the session alive.
-
-    If this leaked as a protocol error the client would drop the connection and
-    every subsequent tool call in that session would fail too.
-    """
+    """A raising handler yields is_error and leaves the session usable."""
 
     def _boom(conn, args):
         raise RuntimeError("synthetic failure")

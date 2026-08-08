@@ -298,10 +298,8 @@ async def call_tool(
     ctx: ServerRequestContext[Any],
     params: types.CallToolRequestParams,
 ) -> types.CallToolResult:
-    # A raised exception would become a JSON-RPC *protocol* error, which Claude
-    # surfaces as a dead tool rather than a readable message. Keep every failure
-    # inside a normal result with is_error, so one bad tool never looks like a
-    # broken server.
+    # An escaping exception becomes a JSON-RPC protocol error and drops the session,
+    # so one failing tool would kill every later call. Keep failures in the result.
     try:
         text = _dispatch(params.name, params.arguments or {})
         is_error = False
@@ -314,9 +312,7 @@ async def call_tool(
     )
 
 
-# SDK 2.0 removed the @server.list_tools()/@server.call_tool() decorators in
-# favour of explicit registration; handlers now take (ctx, params) and return a
-# full Result object instead of a bare list.
+# SDK 2.0 replaced the @list_tools/@call_tool decorators with explicit registration.
 _server.add_request_handler("tools/list", types.PaginatedRequestParams, list_tools)
 _server.add_request_handler("tools/call", types.CallToolRequestParams, call_tool)
 
