@@ -147,7 +147,7 @@ def get_agent_scanned_at(conn: sqlite3.Connection, agent_id: str) -> str | None:
 def list_sessions(conn: sqlite3.Connection, project: str | None = None, limit: int = 20) -> list[sqlite3.Row]:
     if project:
         return conn.execute("""
-            SELECT session_id, source, project_dir, model, started_at, ended_at,
+            SELECT session_id, source, project_dir, slug, model, started_at, ended_at,
                    turn_count, tool_call_count, first_message
             FROM sessions
             WHERE project_dir LIKE ?
@@ -155,7 +155,7 @@ def list_sessions(conn: sqlite3.Connection, project: str | None = None, limit: i
             LIMIT ?
         """, (f"%{project}%", limit)).fetchall()
     return conn.execute("""
-        SELECT session_id, source, project_dir, model, started_at, ended_at,
+        SELECT session_id, source, project_dir, slug, model, started_at, ended_at,
                turn_count, tool_call_count, first_message
         FROM sessions
         ORDER BY started_at DESC
@@ -166,7 +166,7 @@ def list_sessions(conn: sqlite3.Connection, project: str | None = None, limit: i
 def get_session_detail(conn: sqlite3.Connection, session_id: str) -> dict | None:
     """Return full session info plus ordered chunks."""
     row = conn.execute("""
-        SELECT session_id, source, project_dir, git_branch, model,
+        SELECT session_id, source, project_dir, git_branch, slug, model,
                started_at, ended_at, turn_count, tool_call_count,
                tool_names, files_json, first_message
         FROM sessions WHERE session_id = ?
