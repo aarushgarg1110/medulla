@@ -283,6 +283,7 @@ def _parse_claude(path: Path, slug: str, body: str) -> ParsedSession | None:
     project_dir: str | None = None
     git_branch: str | None = None
     model: str | None = None
+    custom_title: str | None = None
     started_at: str | None = None
     ended_at: str | None = None
     turn_count = 0
@@ -307,6 +308,8 @@ def _parse_claude(path: Path, slug: str, body: str) -> ParsedSession | None:
             session_id = node["sessionId"]
         if git_branch is None and "gitBranch" in node:
             git_branch = node["gitBranch"]
+        if node.get("type") == "custom-title" and node.get("customTitle"):
+            custom_title = node["customTitle"]
 
         ts = node.get("timestamp")
         if ts:
@@ -353,7 +356,7 @@ def _parse_claude(path: Path, slug: str, body: str) -> ParsedSession | None:
         source="claude",
         project_dir=project_dir,
         git_branch=git_branch,
-        slug=slug,
+        slug=custom_title or slug,
         model=model,
         started_at=started_at,
         ended_at=ended_at,

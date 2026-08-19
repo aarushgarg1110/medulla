@@ -72,6 +72,41 @@ def test_parse_session_uses_stem_as_fallback_id(tmp_path):
     assert result.session_id == "fallback-id"
 
 
+def test_parse_session_slug_uses_custom_title(tmp_path):
+    content = make_claude_jsonl([
+        claude_user("hi"),
+        {"type": "custom-title", "customTitle": "cacoAblationPart1", "sessionId": "test-session-id"},
+    ])
+    path = tmp_path / "abc123.jsonl"
+    path.write_text(content)
+    result = parse_session(path)
+    assert result is not None
+    assert result.slug == "cacoAblationPart1"
+
+
+def test_parse_session_slug_last_rename_wins(tmp_path):
+    content = make_claude_jsonl([
+        claude_user("hi"),
+        {"type": "custom-title", "customTitle": "cacoAblationPart1", "sessionId": "test-session-id"},
+        claude_user("more"),
+        {"type": "custom-title", "customTitle": "cacoAblationPart2", "sessionId": "test-session-id"},
+    ])
+    path = tmp_path / "abc123.jsonl"
+    path.write_text(content)
+    result = parse_session(path)
+    assert result is not None
+    assert result.slug == "cacoAblationPart2"
+
+
+def test_parse_session_slug_falls_back_to_stem_when_never_renamed(tmp_path):
+    content = make_claude_jsonl([claude_user("hi")])
+    path = tmp_path / "unnamed-session.jsonl"
+    path.write_text(content)
+    result = parse_session(path)
+    assert result is not None
+    assert result.slug == "unnamed-session"
+
+
 def test_parse_session_first_message_capped(tmp_path):
     long_msg = "x" * (MAX_FIRST_MSG + 100)
     content = make_claude_jsonl([claude_user(long_msg)])
