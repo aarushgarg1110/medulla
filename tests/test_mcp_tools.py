@@ -137,6 +137,29 @@ def test_tool_session_detail_specific_chunk(db):
     assert "Next:" in result or "End of session" in result
 
 
+def test_tool_session_detail_footer_suggests_a_range(db):
+    """The footer must point at a range, not the next single chunk.
+
+    It previously read "[Next: chunk_index=N+1]", which taught callers to page one chunk
+    at a time — 313 single-chunk calls against 23 range calls on the live index. The
+    footer is load-bearing behavior, so it is pinned here.
+    """
+    upsert_session(db, make_session(
+        "sess-multichunk",
+        messages=[f"distinct topic number {i} with enough text to chunk" * 12 for i in range(40)],
+    ))
+    total = db.execute(
+        "SELECT COUNT(*) FROM session_chunks WHERE session_id='sess-multichunk'"
+    ).fetchone()[0]
+    assert total > 1, "fixture must produce multiple chunks for a Next: footer to appear"
+
+    result = _tool_session_detail(db, {"session_id": "sess-multichunk", "chunk_index": 0})
+    footer = result.strip().splitlines()[-1]
+    assert "chunk_start=" in footer
+    assert "chunk_end=" in footer
+    assert "chunk_index=" not in footer
+
+
 def test_tool_session_detail_chunk_out_of_range(db):
     _setup(db)
     result = _tool_session_detail(db, {"session_id": "sess-mcp-001", "chunk_index": 9999})

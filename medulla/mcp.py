@@ -446,7 +446,9 @@ def _tool_session_detail(conn, args: dict) -> str:
             "",
             c["chunk_text"],  # full text, no truncation
             "",
-            f"[Next: chunk_index={chunk_index + 1}]" if chunk_index + 1 < total_chunks else "[End of session]",
+            f"[Next: chunk_start={chunk_index + 1}, chunk_end={min(chunk_index + 5, total_chunks - 1)} "
+            f"— read a range in one call rather than paging one chunk at a time]"
+            if chunk_index + 1 < total_chunks else "[End of session]",
         ]
         return "\n".join(lines)
 
