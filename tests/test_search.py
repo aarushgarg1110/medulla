@@ -201,11 +201,23 @@ def test_recency_boost_pure():
 
 
 def test_recency_breaks_tie_newer_first(db):
-    """Two equally-relevant sessions → the more recent ranks first (hybrid path)."""
+    """Two equally-relevant sessions → the more recent ranks first (hybrid path).
+
+    Dates are relative to now. Absolute dates rot: the recency term must clear a
+    fused-score gap of 2*(1/61 - 1/62), and a fixed pair decays past it as the wall
+    clock advances. The original 2026-01-01/2026-07-01 pair cleared it by 2.4e-4 when
+    written, 6e-6 on 2026-08-08, and failed by -8.8e-5 eleven days later.
+    """
+    from datetime import datetime, timedelta, timezone
+
     from medulla.db.embedding_store import upsert_chunk_embedding
     from medulla.search import _get_search_embedding_provider, hybrid_search
+
+    def _ago(days):
+        return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat().replace("+00:00", "Z")
+
     txt = "recencyxyz shared identical content about the topic here " * 20
-    for sid, date in [("old-sess", "2026-01-01T00:00:00Z"), ("new-sess", "2026-07-01T00:00:00Z")]:
+    for sid, date in [("old-sess", _ago(365)), ("new-sess", _ago(1))]:
         s = make_session(sid, messages=[txt])
         s.started_at = date
         upsert_session(db, s)
@@ -214,6 +226,26 @@ def test_recency_breaks_tie_newer_first(db):
             upsert_chunk_embedding(db, sid, row["chunk_index"], prov.embed([row["chunk_text"]])[0])
     order = [r.id for r in hybrid_search(db, "recencyxyz shared content topic", limit=10)]
     assert order.index("new-sess") < order.index("old-sess")
+
+
+def test_recency_term_can_outrank_one_fused_position():
+    """The recency term must be able to overcome an adjacent-rank fused-score gap.
+
+    Both RRF legs put the older session one position ahead, so the newer one has to make
+    up 2*(1/61 - 1/62) = 5.3e-4. If RECENCY_WEIGHT or the half-life is ever retuned below
+    that, test_recency_breaks_tie_newer_first flips with no obvious cause — this fails
+    first and says why.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from medulla.search import RECENCY_WEIGHT, _RRF_UNIT, _recency_boost
+
+    def term(days):
+        d = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat().replace("+00:00", "Z")
+        return RECENCY_WEIGHT * _recency_boost(d) * _RRF_UNIT
+
+    gap = 2 * (1 / 61 - 1 / 62)
+    assert term(1) - term(365) > gap
 
 
 def _evt(hash_, command, tool="Bash", is_error=False, session="sess-e"):
