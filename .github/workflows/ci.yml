@@ -23,4 +23,4 @@ jobs:
         run: uv run pytest tests/ --cov=medulla --cov-branch --cov-report=term-missing --tb=short -q
 
       - name: Enforce statement coverage ≥ 95%
-        run: uv run pytest tests/ --cov=medulla --cov-fail-under=95 -q --no-header 2>&1 | tail -3
+        run: set -o pipefail; uv run pytest tests/ --cov=medulla --cov-fail-under=95 -q --no-header 2>&1 | tail -3
