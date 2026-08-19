@@ -453,6 +453,8 @@ def _tool_session_detail(conn, args: dict) -> str:
     # Overview: metadata + first 3 chunks
     lines = []
     lines.append(f"Session: {s['session_id']}")
+    if s.get("slug") and s["slug"] != s["session_id"]:
+        lines.append(f"Objective: {s['slug']}")
     lines.append(f"Project: {s.get('project_dir', '')}")
     lines.append(f"Date:    {(s.get('started_at') or '')[:10]} → {(s.get('ended_at') or '')[:10]}")
     lines.append(f"Turns:   {s.get('turn_count', 0)}   Tool calls: {s.get('tool_call_count', 0)}")
@@ -546,7 +548,9 @@ def _tool_list(conn, args: dict) -> str:
         date = (r["started_at"] or "")[:10]
         proj = (r["project_dir"] or "").split("/")[-1]
         msg = (r["first_message"] or "")[:60].replace("\n", " ")
-        lines.append(f"  {r['session_id'][:8]}  {date}  {proj}")
+        slug = r["slug"] if r["slug"] and r["slug"] != r["session_id"] else ""
+        name = f"  [{slug}]" if slug else ""
+        lines.append(f"  {r['session_id'][:8]}  {date}  {proj}{name}")
         lines.append(f"    turns={r['turn_count']}  {msg}")
     return "\n".join(lines)
 
