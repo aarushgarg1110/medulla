@@ -80,9 +80,18 @@ def test_more_than_200k_tokens_can_only_be_the_1m_window(home):
 
 
 def test_context_line_says_the_handoff_is_automatic_near_the_threshold(home):
-    assert ah.context_line("s1", transcript(home, 100_000)) == "[context] 50.0% of 200,000 tokens (100,000)"
+    assert ah.context_line("s1", transcript(home, 100_000, title=None)) == "[context] 50.0% of 200,000 tokens (100,000)"
     assert "autohandoff takes over at 93%" in ah.context_line("s1", transcript(home, 180_000))
     assert ah.context_line("s1", None) is None
+
+
+def test_context_line_names_the_session_since_claude_cannot_see_its_title(home):
+    p = transcript(home, 100_000)
+    assert ah.context_line("s1", p) == "[context] 50.0% of 200,000 tokens (100,000) · this session: fooPart3"
+    with open(p, "a") as fh:
+        fh.write("\n" + json.dumps({"type": "custom-title", "customTitle": "barPart1"}))       # a later /rename
+    assert ah.context_line("s1", p).endswith("· this session: barPart1")
+    assert "this session" not in ah.context_line("s1", transcript(home, 100_000, title=None))
 
 
 # ── the Stop decision ─────────────────────────────────────────────────────────

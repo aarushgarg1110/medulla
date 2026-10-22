@@ -15,7 +15,10 @@ message *is* the durable artifact. Writing it to disk as well is duplication tha
 Accepts free-form extra instruction after the command (e.g. `/handoff focus on the backtest
 thread, skip the write-up`). Honour it: it tells you what the next session is for.
 
-**Name the session.** The next session finds this one by its title. If it has none, ask the user to
+**Name the session.** The next session finds this one by its title. You cannot see it directly: read it
+from the `· this session:` part of the `[context]` line medulla adds to each prompt, or, without that
+line, from the header of `medulla_resume` called with your session id (`echo $CLAUDE_CODE_SESSION_ID`).
+If it has none, ask the user to
 run `/rename <objective>` first (or use the next free part name, e.g. `fooPart3` when `fooPart2`
 exists). Parts of one objective share a stem (`foo`, `fooPart2`, `fooPart3`), and `medulla_resume`
 lists them all, so the next session can see where the thread began.

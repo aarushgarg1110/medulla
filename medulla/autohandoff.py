@@ -176,14 +176,18 @@ def _mark(sid: str, args: str, who: str) -> None:
 
 
 def context_line(sid: str, transcript_path: str | None) -> str | None:
-    """`[context] 31.2% of 1,000,000 tokens (312,345)` and, near the threshold, that the handoff is the
-    hook's job, so Claude keeps working instead of wrapping up early."""
+    """`[context] 31.2% of 1,000,000 tokens (312,345) · this session: fooPart3` (Claude cannot see its own
+    title) and, near the threshold, that the handoff is the hook's job, so Claude keeps working."""
     tokens = context_tokens(transcript_path) if transcript_path else None
     if tokens is None:
         return None
+    from medulla.episodic.scanner import title_of
     size = window_size(sid, tokens)
     pct, at = 100.0 * tokens / size, threshold()
     line = f"[context] {pct:.1f}% of {size:,} tokens ({tokens:,})"
+    title = title_of(Path(transcript_path))
+    if title:
+        line += f" · this session: {title}"
     if pct >= PLAN_FROM * at:
         line += f" · autohandoff takes over at {at:g}%; keep working"
     return line
