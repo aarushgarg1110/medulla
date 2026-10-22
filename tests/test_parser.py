@@ -40,6 +40,25 @@ def test_subagent_transcripts_skip_request_blobs_too(tmp_path):
     assert parse_agent_session(path).all_user_text.count("why is the sky blue") == 1
 
 
+SKILL = {**claude_user("Base directory for this skill: /x/skills/handoff\n# Handoff\n4. Immediate next action"),
+         "isMeta": True}
+AGENT = {**claude_user("Another Claude session sent a message: the docs say /config works"), "isMeta": True}
+
+
+def test_skill_instructions_are_not_indexed_but_other_meta_messages_are(tmp_path):
+    """A skill's instructions arrive as a meta user message each time it runs: the same text in every
+    session that uses it, and the handoff skill's reads like a handoff report. A subagent's report is
+    meta too, and is real content."""
+    path = tmp_path / "s.jsonl"
+    path.write_text(make_claude_jsonl([claude_user("/medulla:handoff"), SKILL, AGENT]))
+    text = parse_session(path).all_user_text
+    assert "Base directory" not in text and "the docs say /config works" in text and "/medulla:handoff" in text
+    sub = tmp_path / "proj" / "sess" / "subagents" / "agent-b.jsonl"
+    sub.parent.mkdir(parents=True)
+    sub.write_text(make_claude_jsonl([claude_user("go"), SKILL]))
+    assert "Base directory" not in parse_agent_session(sub).all_user_text
+
+
 # ── is_subagent_file ──────────────────────────────────────────────────────────
 
 def test_is_subagent_file_detects_subagent(tmp_path):

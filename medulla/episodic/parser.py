@@ -322,7 +322,7 @@ def _parse_claude(path: Path, slug: str, body: str) -> ParsedSession | None:
 
         if role in ("user", "human"):
             text = _extract_user_text(msg)
-            if text:
+            if text and not _is_skill_body(node, text):
                 if first_message is None:
                     first_message = text[:MAX_FIRST_MSG]
                 messages.append(text)
@@ -414,7 +414,7 @@ def _parse_agent_claude(path: Path, body: str) -> ParsedAgentSession | None:
 
         if role in ("user", "human"):
             text = _extract_user_text(msg)
-            if text:
+            if text and not _is_skill_body(node, text):
                 if first_message is None:
                     first_message = text[:MAX_FIRST_MSG]
                 messages.append(text)
@@ -584,6 +584,12 @@ def _turn_role(node: dict) -> str:
     if kind and kind not in _TURN_TYPES:
         return ""
     return (node.get("message") or {}).get("role") or kind or ""
+
+
+def _is_skill_body(node: dict, text: str) -> bool:
+    """A skill's instructions, injected as a meta user message when it runs: the same text in every session
+    that uses the skill, and the handoff skill's reads like a handoff report."""
+    return bool(node.get("isMeta")) and text.startswith("Base directory for this skill:")
 
 
 def _sanitize_text(text: str) -> str:
