@@ -7,6 +7,7 @@ refresh or read on differs, because the two front doors spell it differently.
 from __future__ import annotations
 
 import difflib
+import itertools
 import re
 import sqlite3
 
@@ -16,7 +17,9 @@ EXPAND_CHARS = 6000   # per expanded chunk; a handoff report fits, a 40k-char to
 
 _PART = re.compile(r"^(.*?)(?:Part\d+)?$")
 _REPORT = re.compile(r"immediate next action", re.I)
-_REPORT_START = re.compile(r"(?im)^#+\s*(?:handoff|1\.\s*overarching goal)")
+_SECTION = re.compile(r"(?im)(?:(?:^|\s)(?:#+\s*|\*\*)(?:\d+\.\s*)?|^\s*\d+\.\s*)immediate next action")
+_TITLE = re.compile(r"(?im)(?:^|\s)(#+\s*handoff\b)")
+_GOAL = re.compile(r"(?im)(?:^|\s)((?:#+\s*|\*\*)1\.\s*overarching goal)")
 
 
 class NotFound(LookupError):
@@ -58,6 +61,18 @@ def _resolve(conn: sqlite3.Connection, name: str):
     return rows[0] if rows else None
 
 
+def _report_start(text: str, end: int) -> int | None:
+    """Where the report whose "Immediate next action" section is at `end` begins: its last title before it,
+    else its "1. Overarching goal". A heading with another such section after it belongs to earlier text,
+    such as the handoff skill's own instructions; a mere mention (a keywords list) does not count. A heading
+    need not start a line: the chunker joins Claude's consecutive messages with a space."""
+    for heading in (_TITLE, _GOAL):
+        starts = [m.start(1) for m in heading.finditer(text, 0, end)]
+        if starts and not _SECTION.search(text, starts[-1], end):
+            return starts[-1]
+    return None
+
+
 def resume(conn: sqlite3.Connection, name: str, last: int = 2) -> str:
     """Index `name` if its transcript changed, then return its header, its parts (foo, fooPart2, …) by
     date, and its handoff report, or its last `last` chunks when it has none. Raises NotFound."""
@@ -92,11 +107,16 @@ def resume(conn: sqlite3.Connection, name: str, last: int = 2) -> str:
 
     hits = [i for i, c in enumerate(chunks) if _REPORT.search(c["chunk_text"])]
     if hits:
-        k = hits[-1]
-        while k > 0 and not _REPORT_START.search(chunks[k]["chunk_text"]) and k > hits[-1] - 2:
-            k -= 1
-        body = "\n".join(c["chunk_text"] for c in chunks[k:])
-        lines += ["", f"Handoff report (chunks {k}–{len(chunks) - 1}):", body[:4 * EXPAND_CHARS]]
+        lo = max(0, hits[-1] - 2)
+        texts = [c["chunk_text"] for c in chunks[lo:]]
+        text = "\n".join(texts)
+        ends = list(itertools.accumulate(len(t) + 1 for t in texts))      # each chunk's end offset in text
+        end = (list(_SECTION.finditer(text)) or list(_REPORT.finditer(text)))[-1].start()
+        start = _report_start(text, end)
+        if start is None:
+            start = ends[hits[-1] - lo - 1] if hits[-1] > lo else 0         # the last matching chunk, whole
+        k = lo + sum(e <= start for e in ends)
+        lines += ["", f"Handoff report (chunks {k}–{len(chunks) - 1}):", text[start:][:4 * EXPAND_CHARS]]
     else:
         n = max(1, last or 2)
         lines += ["", f"No handoff report in this session — its last {min(n, len(chunks))} chunk(s):"]

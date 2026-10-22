@@ -841,6 +841,44 @@ def test_resume_returns_the_handoff_and_the_parts_chain(db):
     assert parts.index(" hippo ") < parts.index("hippoPart2") < parts.index("hippoPart3")
 
 
+SKILL_TEXT = ("Base directory for this skill: /x/skills/handoff\n# Handoff — hand this session to the next one\n"
+              "**1. Overarching goal.** One or two sentences.\n**4. Immediate next action.** ONE thing.")
+
+
+def test_resume_returns_the_report_not_the_skill_text_before_it(db):
+    """Seen live on 2026-10-22 (portTestPart1): the report began "Tool loaded. # Handoff — ...", so a title
+    looked for only at a line start was missed, and resume walked back into the handoff skill's own
+    instructions, which an index built before 2026-10-22 still holds."""
+    report = ("Tool loaded. # Handoff — fooPart1\n\n**1. Overarching goal**\nShip v1.\n\n"
+              "**4. Immediate next action**\nOpen the PR.")
+    upsert_session(db, _titled("r1", "fooPart1", ["start foo", SKILL_TEXT, report]))
+    out = _tool_resume(db, {"name": "fooPart1"})
+    body = out.split("):\n", 1)[1]
+    assert body.startswith("# Handoff — fooPart1") and "Open the PR." in body and "Base directory" not in out
+
+
+def test_resume_starts_a_report_without_a_title_at_its_goal(db):
+    report = "Done.\n**1. Overarching goal**\nShip v1.\n**4. Immediate next action**\nOpen the PR."
+    upsert_session(db, _titled("r2", "barPart1", ["start bar", SKILL_TEXT, report]))
+    body = _tool_resume(db, {"name": "barPart1"}).split("):\n", 1)[1]
+    assert body.startswith("**1. Overarching goal**") and "Base directory" not in body
+
+
+def test_a_report_that_names_its_section_again_in_its_keywords_is_still_found_whole(db):
+    """portTestPart1 listed `Immediate next action` among its keywords: a mention, not a section, and it
+    must not make the report's own title look like earlier text."""
+    report = ("Tool loaded. # Handoff — bazPart1\n**1. Overarching goal**\nShip v1.\n"
+              "**4. Immediate next action**\nOpen the PR.\n**7. Keywords**\n`Immediate next action`, `v1`")
+    upsert_session(db, _titled("r3", "bazPart1", ["start baz", SKILL_TEXT, report]))
+    body = _tool_resume(db, {"name": "bazPart1"}).split("):\n", 1)[1]
+    assert body.startswith("# Handoff — bazPart1") and "Base directory" not in body
+
+
+def test_a_report_that_only_mentions_its_next_action_is_still_returned(db):
+    upsert_session(db, _titled("r4", "quxPart1", ["start qux", "Wrapping up: the immediate next action is to ship."]))
+    assert "the immediate next action is to ship" in _tool_resume(db, {"name": "quxPart1"})
+
+
 def test_resume_without_a_handoff_returns_the_last_chunks(db):
     upsert_session(db, _titled("s9", "noHandoff", [f"turn {i} " + "x " * 120 for i in range(30)]))
     out = _tool_resume(db, {"name": "noHandoff", "last": 2})
