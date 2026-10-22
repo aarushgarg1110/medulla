@@ -44,6 +44,10 @@ def stop(home, tokens, **kw):
     return {"hook_event_name": "Stop", "session_id": "s1", "transcript_path": transcript(home, tokens), **kw}
 
 
+def logged(home):
+    return [json.loads(line) for line in (home / "medulla" / "state" / "autohandoff.log.jsonl").read_text().splitlines()]
+
+
 # ── sizing the window ─────────────────────────────────────────────────────────
 
 def test_next_names():
@@ -116,6 +120,68 @@ def test_a_failed_open_is_reported(home):
     ah._mark("s1", "", "user")
     out = ah.on_stop(stop(home, 10, last_assistant_message=REPORT), lambda p, n, e: (False, "no terminal"))
     assert "could not open fooPart4: no terminal" in out["systemMessage"]
+
+
+def test_the_open_is_recorded_before_it_is_attempted(home):
+    ah._mark("s1", "", "hook")
+    seen = {}
+
+    def spawn(prev, nxt, event):
+        seen["opening"] = json.loads(ah._opening("s1").read_text())
+        seen["logged"] = logged(home)[-1]["action"]
+        return True, "opened"
+    ah.on_stop(stop(home, 190_000, last_assistant_message=REPORT, cwd="/work"), spawn)
+    assert seen == {"opening": {"prev": "fooPart3", "next": "fooPart4", "cwd": "/work"}, "logged": "opening"}
+    assert not ah._opening("s1").exists() and logged(home)[-1]["action"] == "spawn"
+
+
+def test_a_spawn_that_raises_is_reported_not_swallowed(home):
+    ah._mark("s1", "", "user")
+
+    def spawn(prev, nxt, event):
+        raise ValueError("no such tty")
+    out = ah.on_stop(stop(home, 10, last_assistant_message=REPORT), spawn)
+    assert "could not open fooPart4: ValueError: no such tty" in out["systemMessage"]
+    assert not ah._opening("s1").exists()
+
+
+def killed_mid_open(home):
+    """The Mac sleeps with the lid closed and Claude kills the hook on wake: nothing after spawn runs."""
+    ah._mark("s1", "", "hook")
+
+    def spawn(prev, nxt, event):
+        raise SystemExit
+    with pytest.raises(SystemExit):
+        ah.on_stop(stop(home, 10, last_assistant_message=REPORT, cwd="/work"), spawn)
+
+
+def test_an_interrupted_open_is_reported_on_the_next_prompt(home, monkeypatch):
+    killed_mid_open(home)
+    monkeypatch.setattr(ah, "_running", lambda nxt: False)
+    out = ah.on_prompt({"session_id": "s1", "prompt": "where is part 4?"})
+    assert "opening fooPart4 was interrupted" in out["systemMessage"]
+    assert "cd /work && claude -n fooPart4 '/medulla:pickoff fooPart3" in out["systemMessage"]
+    assert out["hookSpecificOutput"]["additionalContext"] == out["systemMessage"]
+    assert logged(home)[-1] == {**logged(home)[-1], "action": "spawn", "ok": False, "detail": "interrupted"}
+    assert ah.on_prompt({"session_id": "s1", "prompt": "and now?"}) is None      # reported once
+
+
+def test_an_interrupted_open_whose_part_did_start_is_confirmed_quietly(home, monkeypatch):
+    killed_mid_open(home)
+    monkeypatch.setattr(ah, "_running", lambda nxt: nxt == "fooPart4")
+    assert ah.on_prompt({"session_id": "s1", "prompt": "hi"}) is None
+    assert ah._spawned("s1").read_text() == "fooPart4" and logged(home)[-1]["ok"] is True
+
+
+def test_running_means_the_next_part_process_exists(monkeypatch):
+    from medulla import terminals
+    monkeypatch.setattr(terminals, "claude_started", lambda nxt: lambda: nxt == "fooPart4")
+    assert ah._running("fooPart4") and not ah._running("fooPart5")
+
+
+def test_an_unreadable_opening_record_is_ignored(home):
+    ah._opening("s1").write_text("not json")
+    assert ah.on_prompt({"session_id": "s1", "prompt": "hi"}) is None
 
 
 def test_subagents_and_a_continued_stop_are_left_alone(home):

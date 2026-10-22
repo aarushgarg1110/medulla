@@ -13,6 +13,8 @@ statusline's record (medulla statusline), a configured size, a `[1m]` model in C
 finally the transcript itself, since more than 200k tokens can only fit the 1M window.
 
 Fails open: any error means no output, because a missed handoff is recoverable and a blocked stop is not.
+An open is recorded before it is attempted, so one the hook does not live to finish (the Mac slept and
+Claude killed the hook on wake) is reported on the session's next prompt instead of vanishing.
 """
 from __future__ import annotations
 
@@ -152,6 +154,15 @@ def _spawned(sid: str) -> Path:
     return state_dir() / f"{sid}.spawned"
 
 
+def _opening(sid: str) -> Path:
+    return state_dir() / f"{sid}.opening"
+
+
+def _running(nxt: str) -> bool:
+    from medulla import terminals
+    return terminals.claude_started(nxt)()
+
+
 def _log(**rec) -> None:
     with open(state_dir() / "autohandoff.log.jsonl", "a") as fh:
         fh.write(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), **rec}) + "\n")
@@ -192,13 +203,38 @@ def terminal_spawn(prev: str, nxt: str, event: dict) -> tuple[bool, str]:
                                  started=terminals.claude_started(nxt))
 
 
+def interrupted(sid: str) -> str | None:
+    """An open the hook did not live to finish: confirmed quietly if the next part is running, else the
+    command to open it by hand."""
+    try:
+        rec = json.loads(_opening(sid).read_text())
+    except (OSError, ValueError):
+        return None
+    finally:
+        _opening(sid).unlink(missing_ok=True)
+    prev, nxt = rec["prev"], rec["next"]
+    if _running(nxt):
+        _spawned(sid).write_text(nxt)
+        _log(sid=sid, action="spawn", ok=True, prev=prev, next=nxt, detail="confirmed after an interrupted open")
+        return None
+    _log(sid=sid, action="spawn", ok=False, prev=prev, next=nxt, detail="interrupted")
+    return (f"autohandoff: opening {nxt} was interrupted before it finished, and it is not running. "
+            f"Run it yourself: cd {shlex.quote(rec['cwd'])} && {launch_line(prev, nxt)}")
+
+
 def on_prompt(event: dict) -> dict | None:
-    """A typed /handoff marks a handoff pending; each prompt carries the context line."""
+    """A typed /handoff marks a handoff pending; each prompt carries the context line, and the first
+    prompt after an interrupted open says so."""
+    sid = event["session_id"]
     m = _HANDOFF_CMD.fullmatch(event.get("prompt") or "")
     if m:
-        _mark(event["session_id"], m.group(1) or "", "user")
-    line = context_line(event["session_id"], event.get("transcript_path"))
-    return line and {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": line}}
+        _mark(sid, m.group(1) or "", "user")
+    notice = interrupted(sid)
+    context = "\n".join(x for x in (notice, context_line(sid, event.get("transcript_path"))) if x)
+    out = {"systemMessage": notice} if notice else {}
+    if context:
+        out["hookSpecificOutput"] = {"hookEventName": "UserPromptSubmit", "additionalContext": context}
+    return out or None
 
 
 def on_skill(event: dict) -> None:
@@ -224,7 +260,13 @@ def on_stop(event: dict, spawn) -> dict | None:
             return {"systemMessage": "autohandoff: this session has no /rename title, so no next part "
                                      "was opened. Rename it, then open the next part yourself."}
         nxt, prev = next_names(title)
-        ok, detail = spawn(prev, nxt, event)
+        _opening(sid).write_text(json.dumps({"prev": prev, "next": nxt, "cwd": event.get("cwd") or os.getcwd()}))
+        _log(sid=sid, action="opening", prev=prev, next=nxt)
+        try:
+            ok, detail = spawn(prev, nxt, event)
+        except Exception as e:
+            ok, detail = False, f"{type(e).__name__}: {e}"
+        _opening(sid).unlink()
         _log(sid=sid, action="spawn", ok=ok, prev=prev, next=nxt, detail=detail)
         if not ok:
             return {"systemMessage": f"autohandoff: could not open {nxt}: {detail}"}
