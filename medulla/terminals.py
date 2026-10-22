@@ -167,7 +167,9 @@ def _display_asleep() -> bool:
 
 
 def wake_display(runner=subprocess.run) -> bool:
-    """Ghostty cannot create a terminal while the display sleeps: wake it as a keypress would."""
+    """Wake a sleeping display as a keypress would. Ghostty 1.3.1 cannot create a surface without an
+    active display (it fails as error.OutOfMemory and the pane's shell never runs; fixed upstream in
+    ghostty#13639, unreleased). A locked screen is fine; a closed lid cannot wake, and fails here."""
     if not _display_asleep():
         return False
     runner(["caffeinate", "-u", "-t", "1"], capture_output=True, timeout=5)
@@ -183,10 +185,9 @@ def ghostty_open(line, cwd, env, runner, title=None, **_) -> str:
     panes = ghostty_panes(runner)
     src = find_pane(panes, title or "", cwd)
     direction = split_direction(panes, src)
-    woke = wake_display(runner)
     _osascript(_GHOSTTY_SPLIT, src["id"], direction, src["cwd"] or cwd, pane_command(line, env),
                runner=runner)
-    return f"split {direction} of Ghostty pane {src['id'][:8]}" + (", display woken" if woke else "")
+    return f"split {direction} of Ghostty pane {src['id'][:8]}"
 
 
 # ── iTerm2: the session on this process's terminal device ─────────────────────
@@ -259,7 +260,9 @@ def open_beside(line: str, cwd: str, title: str | None, started: Callable[[], bo
     if kind not in OPENERS:
         return True, f"run in a new terminal: {run_it}"
     try:
+        woke = kind != "tmux" and wake_display(runner)     # a macOS app may need an active display
         detail = OPENERS[kind](line=line, cwd=cwd, env=env, runner=runner, title=title)
+        detail += ", display woken" if woke else ""
     except (RuntimeError, LookupError, OSError, subprocess.TimeoutExpired) as e:
         return False, f"{kind}: {e}. Run it yourself: {run_it}"
     took = _wait(started)

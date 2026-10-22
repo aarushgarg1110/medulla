@@ -133,3 +133,20 @@ def test_open_beside_reports_running_failed_or_printed(monkeypatch):
     ok, detail = t.open_beside("echo hi", "/w", "foo", lambda: False, env={"MEDULLA_TERMINAL": "tmux"},
                                runner=Runner())
     assert not ok and "did not start within 10 s" in detail
+
+
+def test_a_sleeping_display_is_woken_for_the_macos_apps_but_not_for_tmux(monkeypatch):
+    woken = []
+    monkeypatch.setattr(t, "wake_display", lambda runner: woken.append(1) or True)
+    ok, detail = t.open_beside("x", "/w", "f", lambda: True, env={"MEDULLA_TERMINAL": "terminal"}, runner=Runner())
+    assert ok and detail.startswith("opened a new Terminal window, display woken")
+    t.open_beside("x", "/w", "f", lambda: True, env={"MEDULLA_TERMINAL": "tmux"}, runner=Runner())
+    assert woken == [1]
+
+
+def test_a_display_that_cannot_wake_says_why_and_gives_the_command(monkeypatch):
+    def lid_closed(runner):
+        raise RuntimeError("the display is asleep and did not wake within 5 s")
+    monkeypatch.setattr(t, "wake_display", lid_closed)
+    ok, detail = t.open_beside("x", "/w", "f", lambda: True, env={"MEDULLA_TERMINAL": "ghostty"}, runner=Runner())
+    assert not ok and "did not wake" in detail and "Run it yourself: cd /w && x" in detail
