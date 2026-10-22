@@ -19,6 +19,27 @@ from medulla.episodic.parser import (
 from tests.conftest import claude_assistant, claude_user, make_claude_jsonl
 
 
+# ── what counts as a conversation turn ────────────────────────────────────────
+
+BLOB = {"type": "api-request-blob", "hash": "h1", "sessionId": "test-session-id",
+        "message": {"role": "user", "content": [{"type": "text", "text": "why is the sky blue"}]}}
+
+
+def test_only_user_and_assistant_entries_are_turns(tmp_path):
+    """Claude Code also writes api-request-blob entries (since 2026-10): a copy of the API request whose
+    message has role "user". Read as a turn, it indexed the user side of each session twice."""
+    path = tmp_path / "s.jsonl"
+    path.write_text(make_claude_jsonl([claude_user("why is the sky blue"), BLOB]))
+    assert parse_session(path).messages == ["why is the sky blue"]
+
+
+def test_subagent_transcripts_skip_request_blobs_too(tmp_path):
+    path = tmp_path / "proj" / "sess" / "subagents" / "agent-a.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text(make_claude_jsonl([claude_user("why is the sky blue"), BLOB]))
+    assert parse_agent_session(path).all_user_text.count("why is the sky blue") == 1
+
+
 # ── is_subagent_file ──────────────────────────────────────────────────────────
 
 def test_is_subagent_file_detects_subagent(tmp_path):
