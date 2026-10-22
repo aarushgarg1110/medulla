@@ -270,7 +270,6 @@ The CLI is for you; the MCP tools are what Claude calls. Most capabilities have 
 | Search quality (NDCG@k, MRR) | `medulla eval`, `medulla eval-gen` | |
 | Start over | `medulla reset [--all] [-y]` | |
 | Run the MCP server | `medulla mcp` | |
-| Session quality metrics (placeholder) | | `medulla_analyze` |
 
 ## Configuration
 

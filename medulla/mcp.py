@@ -270,17 +270,6 @@ _TOOLS = [
         inputSchema={"type": "object", "properties": {}},
     ),
     types.Tool(
-        name="medulla_analyze",
-        description="Manifest quality analysis: retry rates, help-followup rates, error rates per tool manifest.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "since_days": {"type": "integer", "default": 30},
-                "top": {"type": "integer", "default": 20},
-            },
-        },
-    ),
-    types.Tool(
         name="medulla_remove",
         description=(
             "Remove a wiki page or raw file. "
@@ -355,7 +344,6 @@ _HANDLERS: dict[str, Any] = {
     "medulla_ingest": lambda conn, args: _tool_ingest(conn, args),
     "medulla_ingest_url": lambda conn, args: _tool_ingest_url(conn, args),
     "medulla_list_raw": lambda conn, args: _tool_list_raw(conn, args),
-    "medulla_analyze": lambda conn, args: _tool_analyze(conn, args),
     "medulla_reindex_edges": lambda conn, args: _tool_reindex_edges(conn, args),
     "medulla_remove": lambda conn, args: _tool_remove(conn, args),
 }
@@ -812,20 +800,6 @@ def _tool_list_raw(conn, args: dict) -> str:
     lines.append("\nTo ingest a file: read it and call medulla_ingest with your synthesis.")
     lines.append("Or call medulla_ingest_url(url) for URL sources if you lack WebFetch.")
     return "\n".join(lines)
-
-
-def _tool_analyze(conn, args: dict) -> str:
-    """Manifest quality — only meaningful once tool_events is populated."""
-    count = conn.execute("SELECT COUNT(*) FROM tool_events").fetchone()[0]
-    if count == 0:
-        return (
-            "No tool events indexed yet.\n"
-            "Wire up the PostToolUse hook to populate tool_events:\n"
-            '  Add to ~/.claude/settings.json hooks → PostToolUse:\n'
-            '  {"type": "command", "command": "medulla scan"}'
-        )
-    # Future: compute retry/help/error rates per manifest_key
-    return f"tool_events count: {count}. Full manifest quality analysis coming in Sprint 5."
 
 
 def _tool_remove(conn, args: dict) -> str:

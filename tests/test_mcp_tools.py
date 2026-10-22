@@ -10,7 +10,6 @@ from medulla.mcp import (  # noqa: E402
     _tool_list,
     _tool_stats,
     _tool_events_search,
-    _tool_analyze,
     _dispatch,
     _tool_resume,
 )
@@ -384,24 +383,6 @@ def test_tool_events_search_with_data(db):
     db.commit()
     result = _tool_events_search(db, {"query": "logD"})
     assert "Bash" in result or "logD" in result
-
-
-# ── medulla_analyze ────────────────────────────────────────────────────────────
-
-def test_tool_analyze_empty_db(db):
-    result = _tool_analyze(db, {})
-    assert "No tool events" in result
-    assert "PostToolUse" in result
-
-
-def test_tool_analyze_with_events(db):
-    db.execute("""
-        INSERT INTO tool_events(session_id, project_dir, tool, command, event_ts, event_hash, ingested_at)
-        VALUES (?,?,?,?,?,?,datetime('now'))
-    """, ("sess-1", "/proj/a", "Bash", "echo hi", "2026-01-01T10:00:00Z", "hash-2"))
-    db.commit()
-    result = _tool_analyze(db, {})
-    assert "tool_events count: 1" in result
 
 
 # ── wiki stubs ─────────────────────────────────────────────────────────────────

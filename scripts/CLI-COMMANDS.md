@@ -145,7 +145,7 @@ medulla mcp             # ✅ starts MCP stdio server (protocol verified manuall
 # MCP protocol version: 2024-11-05
 # Tools exposed: 12 (medulla_search, session_detail, session_tree,
 #   project_context, list, stats, events_search, wiki_search, wiki_page,
-#   ingest, ingest_url, list_raw, analyze)
+#   ingest, ingest_url, list_raw)
 ```
 
 ---
