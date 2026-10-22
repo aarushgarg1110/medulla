@@ -1,0 +1,30 @@
+{
+  "name": "medulla",
+  "displayName": "medulla",
+  "version": "0.2.0-rc1",
+  "description": "Episodic memory for coding agents: search every past Claude Code and Kiro session, and resume one in a single call.",
+  "author": {
+    "name": "Aarush Garg"
+  },
+  "repository": "https://github.com/aarushgarg1110/medulla",
+  "keywords": [
+    "memory",
+    "sessions",
+    "search",
+    "handoff",
+    "mcp"
+  ],
+  "mcpServers": {
+    "medulla": {
+      "command": "uv",
+      "args": [
+        "--project",
+        "${CLAUDE_PLUGIN_ROOT}",
+        "run",
+        "--quiet",
+        "medulla",
+        "mcp"
+      ]
+    }
+  }
+}

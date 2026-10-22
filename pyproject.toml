@@ -1,6 +1,6 @@
 [project]
 name = "medulla"
-version = "0.1.0"
+version = "0.2.0rc1"
 description = "Three-layer memory for Claude Code and Kiro — episodic, semantic, codebase"
 readme = "README.md"
 requires-python = "==3.12.*"

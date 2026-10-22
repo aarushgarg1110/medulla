@@ -1,0 +1,4 @@
+#!/bin/sh
+# The medulla CLI from this plugin's own checkout: plugin bin/ is on the Bash tool's PATH.
+root="$(cd "$(dirname "$0")/.." && pwd)"
+exec uv --project "$root" run --quiet medulla "$@"
