@@ -35,7 +35,7 @@ _TAIL_BYTES = 4 << 20
 _SMALL_WINDOW, _LARGE_WINDOW = 200_000, 1_000_000
 PLAN_FROM = 0.9      # from this fraction of the threshold, the context line says the handoff is automatic
 
-NUDGE = ("Context is at {pct:.0f}% of the window (autohandoff threshold {at:g}%). Run the medulla "
+NUDGE = ("Context is at {pct:.0f}% of the window (autohandoff threshold {at:g}%, {src}). Run the medulla "
          "handoff skill now, without asking the user first: they turned autohandoff on. Its report "
          "must be your final message; the next part opens when this turn ends.")
 
@@ -51,6 +51,13 @@ def enabled() -> bool:
 
 def threshold() -> float:
     return float(_option("AUTOHANDOFF_AT", "93"))
+
+
+def threshold_source() -> str:
+    """Where threshold() came from, in _option's order, so the next part can tell an odd one is deliberate."""
+    if os.environ.get("MEDULLA_AUTOHANDOFF_AT"):
+        return "from MEDULLA_AUTOHANDOFF_AT"
+    return "set in /config" if os.environ.get("CLAUDE_PLUGIN_OPTION_AUTOHANDOFF_AT") else "the default"
 
 
 def state_dir() -> Path:
@@ -189,7 +196,7 @@ def context_line(sid: str, transcript_path: str | None) -> str | None:
     if title:
         line += f" · this session: {title}"
     if pct >= PLAN_FROM * at:
-        line += f" · autohandoff takes over at {at:g}%; keep working"
+        line += f" · autohandoff takes over at {at:g}% ({threshold_source()}); keep working"
     return line
 
 
@@ -284,7 +291,7 @@ def on_stop(event: dict, spawn) -> dict | None:
         return None
     _flag(sid).write_text("hook")
     _log(sid=sid, action="request", pct=round(pct, 1))
-    return {"decision": "block", "reason": NUDGE.format(pct=pct, at=threshold())}
+    return {"decision": "block", "reason": NUDGE.format(pct=pct, at=threshold(), src=threshold_source())}
 
 
 def main(stdin=sys.stdin, stdout=sys.stdout, spawn=terminal_spawn) -> None:

@@ -96,6 +96,15 @@ def test_context_line_names_the_session_since_claude_cannot_see_its_title(home):
 
 # ── the Stop decision ─────────────────────────────────────────────────────────
 
+def test_the_threshold_says_where_it_came_from(home, monkeypatch):
+    assert "threshold 93%, the default)" in ah.on_stop(stop(home, 190_000), spawn=None)["reason"]
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_AUTOHANDOFF_AT", "80")
+    assert "autohandoff takes over at 80% (set in /config)" in ah.context_line("s1", transcript(home, 170_000))
+    monkeypatch.setenv("MEDULLA_AUTOHANDOFF_AT", "1")
+    out = ah.on_stop(stop(home, 100_000, session_id="s2"), spawn=None)
+    assert "threshold 1%, from MEDULLA_AUTOHANDOFF_AT)" in out["reason"]
+
+
 def test_below_the_threshold_nothing_happens(home):
     assert ah.on_stop(stop(home, 100_000), spawn=None) is None
 
