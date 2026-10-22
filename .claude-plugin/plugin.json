@@ -7,6 +7,7 @@
     "name": "Aarush Garg"
   },
   "repository": "https://github.com/aarushgarg1110/medulla",
+  "license": "MIT",
   "keywords": [
     "memory",
     "sessions",
