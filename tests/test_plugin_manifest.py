@@ -43,3 +43,28 @@ def test_the_marketplace_lists_this_repo_as_its_one_plugin():
     mk = _manifest("marketplace.json")
     assert [(p["name"], p["source"]) for p in mk["plugins"]] == [("medulla", "./")]
 
+
+
+def _frontmatter(path: Path) -> tuple[dict, str]:
+    text = path.read_text()
+    assert text.startswith("---\n"), f"{path} has no frontmatter"
+    head = text.split("---\n", 2)[1]
+    return dict(line.split(": ", 1) for line in head.strip().splitlines()), text
+
+
+def test_every_skill_is_a_portable_agent_skill():
+    """Claude Code and Kiro both load a SKILL.md folder that has a name and a description."""
+    skills = sorted((ROOT / "skills").glob("*/SKILL.md"))
+    assert [p.parent.name for p in skills] == ["handoff", "pickoff"]
+    for p in skills:
+        meta, _ = _frontmatter(p)
+        assert meta["name"] == p.parent.name and len(meta["description"]) > 50
+
+
+def test_the_handoff_section_is_the_heading_resume_finds():
+    """medulla_resume locates a report by its 'Immediate next action' section; renaming it in the
+    skill would make every pickoff fall back to raw chunks without an error."""
+    from medulla.episodic.resume import _REPORT
+    _, text = _frontmatter(ROOT / "skills" / "handoff" / "SKILL.md")
+    section = next(line for line in text.splitlines() if line.startswith("**4."))
+    assert _REPORT.search(section)
