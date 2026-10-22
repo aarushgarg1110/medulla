@@ -1,4 +1,4 @@
-"""Medulla CLI — three-layer memory for Claude Code and Kiro."""
+"""Medulla CLI — dual-layer memory for Claude Code and Kiro: the session journal and the wiki."""
 from __future__ import annotations
 
 import subprocess
@@ -10,7 +10,7 @@ from rich.table import Table
 
 app = typer.Typer(
     name="medulla",
-    help="Three-layer memory for Claude Code and Kiro.",
+    help="Dual-layer memory for Claude Code and Kiro.",
     no_args_is_help=True,
 )
 console = Console()
@@ -42,7 +42,7 @@ def scan(
 def search(
     query: Annotated[str, typer.Argument(help="Search query")],
     limit: Annotated[int, typer.Option("--limit", "-n")] = 10,
-    layer: Annotated[Optional[str], typer.Option("--layer", help="episodic | semantic | code | events")] = None,
+    layer: Annotated[Optional[str], typer.Option("--layer", help="episodic | semantic | events")] = None,
     bm25_only: Annotated[bool, typer.Option("--bm25-only", help="Force keyword-only search, skip vector reranking")] = False,
     expand: Annotated[int, typer.Option("--expand", help="Print the full text of the top N session-chunk hits")] = 0,
     refresh: Annotated[bool, typer.Option("--refresh", help="Index transcripts changed since the last scan first")] = False,

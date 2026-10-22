@@ -1,7 +1,7 @@
 [project]
 name = "medulla"
 version = "0.2.0rc1"
-description = "Three-layer memory for Claude Code and Kiro — episodic, semantic, codebase"
+description = "Dual-layer memory for Claude Code and Kiro: a searchable journal of every session, and a wiki that compounds"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

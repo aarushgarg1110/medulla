@@ -29,7 +29,7 @@ def _recency_boost(date_str: str | None) -> float:
 
 @dataclass
 class SearchResult:
-    layer: str          # episodic | semantic | codebase
+    layer: str          # episodic | semantic
     result_type: str    # session | chunk | wiki_page | tool_event
     id: str             # session_id / wiki slug; tool_event uses "{session_id}#evt{rowid}" (unique)
     title: str

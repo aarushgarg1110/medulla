@@ -1,6 +1,6 @@
 """Medulla MCP stdio server — Sprint 2.
 
-Exposes 11 tools across the episodic memory layer (semantic + codebase in later sprints).
+Exposes the episodic (session journal) and semantic (wiki) layers to Claude over stdio.
 Register with Claude Code:
     claude mcp add medulla uv -- --project /path/to/medulla run medulla mcp
 """
@@ -41,7 +41,7 @@ _TOOLS = [
             "properties": {
                 "query": {"type": "string", "description": "Search terms"},
                 "limit": {"type": "integer", "default": 10},
-                "layer": {"type": "string", "enum": ["episodic", "semantic", "code", "events"], "description": "Restrict to a single layer (omit for all). 'events' = harvested tool/command history only."},
+                "layer": {"type": "string", "enum": ["episodic", "semantic", "events"], "description": "Restrict to a single layer (omit for all). 'events' = harvested tool/command history only."},
                 "bm25_only": {"type": "boolean", "default": False, "description": "Force keyword-only search, skip vector reranking"},
                 "expand": {"type": "integer", "default": 0, "description": "Return the full text of the top N session-chunk hits inline, instead of a pointer to medulla_session_detail. Use when the query is specific enough that the top hits are the answer."},
                 "refresh": {"type": "boolean", "default": False, "description": "Index transcripts changed since the last scan before searching (~10-25 s). The result footer says when this is needed."},
