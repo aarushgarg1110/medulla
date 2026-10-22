@@ -52,10 +52,14 @@ def test_pane_command_runs_the_line_in_a_login_shell_and_keeps_one():
     assert cmd == "/bin/zsh -lic 'cd '\"'\"'/w d'\"'\"' && claude -n x; exec /bin/zsh -l'"
 
 
-def test_tmux_splits_this_sessions_own_pane():
-    r = Runner()
-    assert t.tmux_open("echo hi", "/w", {"TMUX_PANE": "%3", "SHELL": "/bin/sh"}, r) == "split the tmux pane"
-    assert r.calls[0][0][:6] == ["tmux", "split-window", "-h", "-c", "/w", "-t"] and r.calls[0][0][6] == "%3"
+def test_tmux_splits_this_sessions_own_pane_and_can_close_the_new_one():
+    r = Runner({"tmux": "%7\n"})
+    detail, close = t.tmux_open("echo hi", "/w", {"TMUX_PANE": "%3", "SHELL": "/bin/sh"}, r)
+    assert detail == "split the tmux pane"
+    assert r.calls[0][0][:9] == ["tmux", "split-window", "-h", "-P", "-F", "#{pane_id}", "-c", "/w", "-t"]
+    assert r.calls[0][0][9] == "%3"
+    close()
+    assert r.calls[-1][0] == ["tmux", "kill-pane", "-t", "%7"]
     with pytest.raises(RuntimeError):
         t.tmux_open("echo hi", "/w", {}, Runner({"tmux": (1, "")}))
 
@@ -65,8 +69,10 @@ LISTING = "w1\tt1\tp1\t✳ fooPart3\t/w\nw1\tt2\tp2\tother\t/x\n"
 
 def test_ghostty_finds_the_pane_by_title_and_splits_it_right_when_alone():
     r = Runner({"osa:repeat with w in windows": LISTING, "osa:new surface configuration": "p9"})
-    assert t.ghostty_open("echo hi", "/w", {"SHELL": "/bin/sh"}, r, title="fooPart3") == "split right of Ghostty pane p1"
-    assert r.calls[-1][0][2:5] == ["p1", "right", "/w"]
+    detail, close = t.ghostty_open("echo hi", "/w", {"SHELL": "/bin/sh"}, r, title="fooPart3")
+    assert detail == "split right of Ghostty pane p1" and r.calls[-1][0][2:5] == ["p1", "right", "/w"]
+    close()
+    assert r.calls[-1][0][2] == "p9" and "close" in r.calls[-1][1]          # the new pane, not this one
 
 
 def test_find_pane_breaks_a_title_tie_by_directory_and_never_guesses():
@@ -94,7 +100,7 @@ def test_a_sleeping_display_is_woken_or_reported(monkeypatch):
 def test_iterm_splits_the_session_on_this_processes_terminal():
     ps = iter(["123 ??", "45 ttys004"])
     r = Runner({"ps": lambda cmd: next(ps), "osa:sessions of t": "split"})
-    assert t.iterm_open("echo hi", "/w", {"SHELL": "/bin/sh"}, r) == "split the iTerm2 session on /dev/ttys004"
+    assert t.iterm_open("echo hi", "/w", {"SHELL": "/bin/sh"}, r) == ("split the iTerm2 session on /dev/ttys004", None)
     assert r.calls[-1][0][2] == "/dev/ttys004"
     with pytest.raises(LookupError):
         t.iterm_open("x", "/w", {}, Runner({"ps": "1 ttys004", "osa:sessions of t": "none"}))
@@ -104,7 +110,7 @@ def test_iterm_splits_the_session_on_this_processes_terminal():
 
 def test_terminal_app_opens_a_window_in_the_right_directory():
     r = Runner()
-    assert t.terminal_open("echo hi", "/w d", {}, r) == "opened a new Terminal window"
+    assert t.terminal_open("echo hi", "/w d", {}, r) == ("opened a new Terminal window", None)
     assert r.calls[0][0][2] == "cd '/w d' && echo hi"
 
 
@@ -133,6 +139,21 @@ def test_open_beside_reports_running_failed_or_printed(monkeypatch):
     ok, detail = t.open_beside("echo hi", "/w", "foo", lambda: False, env={"MEDULLA_TERMINAL": "tmux"},
                                runner=Runner())
     assert not ok and "did not start within 10 s" in detail
+
+
+def test_a_part_that_never_starts_has_its_pane_closed_where_it_can_be(monkeypatch):
+    """A pane whose claude never runs is dead weight (Ghostty's "terminal failed to initialize"); close it
+    where the adapter knows exactly which pane it made, and say so either way."""
+    monkeypatch.setattr(t, "_clock", iter([0.0, 11.0, 0.0, 11.0, 0.0, 11.0]).__next__)
+    r = Runner({"tmux": "%7"})
+    ok, detail = t.open_beside("x", "/w", "f", lambda: False, env={"MEDULLA_TERMINAL": "tmux"}, runner=r)
+    assert not ok and "did not start within 10 s; closed it. Run it yourself: cd /w && x" in detail
+    assert r.calls[-1][0] == ["tmux", "kill-pane", "-t", "%7"]
+    r = Runner({"tmux": lambda cmd: (1, "") if cmd[1] == "kill-pane" else (0, "%7")})
+    ok, detail = t.open_beside("x", "/w", "f", lambda: False, env={"MEDULLA_TERMINAL": "tmux"}, runner=r)
+    assert not ok and "; could not close it: " in detail
+    ok, detail = t.open_beside("x", "/w", "f", lambda: False, env={"MEDULLA_TERMINAL": "terminal"}, runner=Runner())
+    assert not ok and "did not start within 10 s; it is still open. Run it yourself" in detail
 
 
 def test_a_sleeping_display_is_woken_for_the_macos_apps_but_not_for_tmux(monkeypatch):

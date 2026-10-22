@@ -8,7 +8,9 @@ keystrokes, so no Accessibility permission. Values reach a script as argv, never
 text, so a title or path cannot break it.
 
 open_beside() reports success only once the caller's started() check comes true (by default, a
-`claude -n <next>` process), so "opened" means running, not just requested.
+`claude -n <next>` process), so "opened" means running, not just requested. An opener returns its
+message and a closer for the pane it made (None where it has no exact handle), so a pane whose part
+never starts is closed rather than left dead on screen.
 """
 from __future__ import annotations
 
@@ -80,14 +82,20 @@ def _wait(started: Callable[[], bool]) -> float | None:
 
 # ── tmux ──────────────────────────────────────────────────────────────────────
 
-def tmux_open(line, cwd, env, runner, **_) -> str:
-    cmd = ["tmux", "split-window", "-h", "-c", cwd]
+def tmux_open(line, cwd, env, runner, **_) -> tuple[str, Callable[[], None]]:
+    cmd = ["tmux", "split-window", "-h", "-P", "-F", "#{pane_id}", "-c", cwd]
     if env.get("TMUX_PANE"):
         cmd += ["-t", env["TMUX_PANE"]]                # this session's own pane, not the focused one
     r = runner(cmd + [pane_command(line, env)], capture_output=True, text=True, timeout=15)
     if r.returncode:
         raise RuntimeError(r.stderr.strip() or "tmux split-window failed")
-    return "split the tmux pane"
+    new = r.stdout.strip()
+
+    def close() -> None:
+        k = runner(["tmux", "kill-pane", "-t", new], capture_output=True, text=True, timeout=15)
+        if k.returncode:
+            raise RuntimeError(k.stderr.strip() or "tmux kill-pane failed")
+    return "split the tmux pane", close
 
 
 # ── Ghostty: find this session's pane by its title, then split it ──────────────
@@ -122,6 +130,13 @@ on run argv
 		end if
 		return id of newPane
 	end tell
+end run
+"""
+
+
+_GHOSTTY_CLOSE = """
+on run argv
+	tell application "Ghostty" to close (first terminal whose id is (item 1 of argv))
 end run
 """
 
@@ -181,13 +196,16 @@ def wake_display(runner=subprocess.run) -> bool:
     return True
 
 
-def ghostty_open(line, cwd, env, runner, title=None, **_) -> str:
+def ghostty_open(line, cwd, env, runner, title=None, **_) -> tuple[str, Callable[[], None]]:
     panes = ghostty_panes(runner)
     src = find_pane(panes, title or "", cwd)
     direction = split_direction(panes, src)
-    _osascript(_GHOSTTY_SPLIT, src["id"], direction, src["cwd"] or cwd, pane_command(line, env),
-               runner=runner)
-    return f"split {direction} of Ghostty pane {src['id'][:8]}"
+    new = _osascript(_GHOSTTY_SPLIT, src["id"], direction, src["cwd"] or cwd, pane_command(line, env),
+                     runner=runner)
+
+    def close() -> None:
+        _osascript(_GHOSTTY_CLOSE, new, runner=runner)
+    return f"split {direction} of Ghostty pane {src['id'][:8]}", close
 
 
 # ── iTerm2: the session on this process's terminal device ─────────────────────
@@ -225,13 +243,13 @@ def _tty(runner=subprocess.run, pid: int | None = None) -> str | None:
     return None
 
 
-def iterm_open(line, cwd, env, runner, **_) -> str:
+def iterm_open(line, cwd, env, runner, **_) -> tuple[str, None]:
     tty = _tty(runner)
     if not tty:
         raise RuntimeError("this session has no terminal device")
     if _osascript(_ITERM_SPLIT, tty, pane_command(line, env, cwd), runner=runner) != "split":
         raise LookupError(f"no iTerm2 session is on {tty}")
-    return f"split the iTerm2 session on {tty}"
+    return f"split the iTerm2 session on {tty}", None
 
 
 # ── Terminal.app: no splits, so a new window ──────────────────────────────────
@@ -243,12 +261,23 @@ end run
 """
 
 
-def terminal_open(line, cwd, env, runner, **_) -> str:
+def terminal_open(line, cwd, env, runner, **_) -> tuple[str, None]:
     _osascript(_TERMINAL_NEW, f"cd {shlex.quote(cwd)} && {line}", runner=runner)
-    return "opened a new Terminal window"
+    return "opened a new Terminal window", None
 
 
 OPENERS = {"tmux": tmux_open, "ghostty": ghostty_open, "iterm": iterm_open, "terminal": terminal_open}
+
+
+def _close(close: Callable[[], None] | None) -> str:
+    """Close the pane of a part that never started, where the opener knows exactly which pane it made."""
+    if close is None:
+        return "; it is still open"
+    try:
+        close()
+    except (RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+        return f"; could not close it: {e}"
+    return "; closed it"
 
 
 def open_beside(line: str, cwd: str, title: str | None, started: Callable[[], bool],
@@ -261,11 +290,11 @@ def open_beside(line: str, cwd: str, title: str | None, started: Callable[[], bo
         return True, f"run in a new terminal: {run_it}"
     try:
         woke = kind != "tmux" and wake_display(runner)     # a macOS app may need an active display
-        detail = OPENERS[kind](line=line, cwd=cwd, env=env, runner=runner, title=title)
+        detail, close = OPENERS[kind](line=line, cwd=cwd, env=env, runner=runner, title=title)
         detail += ", display woken" if woke else ""
     except (RuntimeError, LookupError, OSError, subprocess.TimeoutExpired) as e:
         return False, f"{kind}: {e}. Run it yourself: {run_it}"
     took = _wait(started)
     if took is None:
-        return False, f"{detail}, but it did not start within {_START_WAIT_S:g} s. Run it yourself: {run_it}"
+        return False, f"{detail}, but it did not start within {_START_WAIT_S:g} s{_close(close)}. Run it yourself: {run_it}"
     return True, f"{detail}; running in {took:.1f} s"
