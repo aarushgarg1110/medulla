@@ -6,7 +6,9 @@ Register with Claude Code:
 """
 from __future__ import annotations
 
+import difflib
 import json
+import re
 import sys
 from typing import Any
 
@@ -16,6 +18,7 @@ from mcp.server import Server, ServerRequestContext
 from mcp.server.stdio import stdio_server
 
 from medulla.db.database import connect
+from medulla.episodic import scanner
 from medulla.episodic.store import (
     get_project_context,
     get_session_detail,
@@ -41,8 +44,27 @@ _TOOLS = [
                 "limit": {"type": "integer", "default": 10},
                 "layer": {"type": "string", "enum": ["episodic", "semantic", "code", "events"], "description": "Restrict to a single layer (omit for all). 'events' = harvested tool/command history only."},
                 "bm25_only": {"type": "boolean", "default": False, "description": "Force keyword-only search, skip vector reranking"},
+                "expand": {"type": "integer", "default": 0, "description": "Return the full text of the top N session-chunk hits inline, instead of a pointer to medulla_session_detail. Use when the query is specific enough that the top hits are the answer."},
+                "refresh": {"type": "boolean", "default": False, "description": "Index transcripts changed since the last scan before searching (~10-25 s). The result footer says when this is needed."},
             },
             "required": ["query"],
+        },
+    ),
+    types.Tool(
+        name="medulla_resume",
+        description=(
+            "Pick up a previous session in one call: find it by /rename title (or session-id prefix), "
+            "index it first if it changed after the last scan, and return its handoff report (or its last "
+            "chunks when it has none) plus every part of the same objective (foo, fooPart2, fooPart3) by "
+            "date. Replaces `medulla scan` + medulla_list + medulla_session_detail at the start of a pickoff."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The session's /rename title, e.g. 'inferenceOptimizationPart6', or a session-id prefix"},
+                "last": {"type": "integer", "default": 2, "description": "Chunks to return from the end when the session has no handoff report"},
+            },
+            "required": ["name"],
         },
     ),
     types.Tool(
@@ -321,6 +343,7 @@ _server.add_request_handler("tools/call", types.CallToolRequestParams, call_tool
 
 _HANDLERS: dict[str, Any] = {
     "medulla_search": lambda conn, args: _tool_search(conn, args),
+    "medulla_resume": lambda conn, args: _tool_resume(conn, args),
     "medulla_session_detail": lambda conn, args: _tool_session_detail(conn, args),
     "medulla_session_tree": lambda conn, args: _tool_session_tree(conn, args),
     "medulla_project_context": lambda conn, args: _tool_project_context(conn, args),
@@ -360,21 +383,57 @@ def _dispatch(name: str, args: dict) -> str:
     return handler(_get_conn(), args)
 
 
+EXPAND_CHARS = 6000   # per expanded chunk; a handoff report fits, a 40k-char tool dump does not
+
+
+def _stale_note(conn) -> str:
+    """One line when the index is behind the transcripts — a session that ended after the last scan
+    is invisible to search, and nothing used to say so."""
+    stale = scanner.stale_sessions(conn)
+    if not stale:
+        return ""
+    names = [scanner.title_of(p) or p.stem[:8] for p in stale[-3:]]
+    n = len(stale)
+    return (f"\n⚠ {n} transcript{'s' if n > 1 else ''} changed since "
+            f"{'they were' if n > 1 else 'it was'} indexed ({', '.join(names)}{', …' if n > 3 else ''}): "
+            f"results may miss them. Pass refresh=true to index first.")
+
+
+def _chunk_text(conn, session_id: str, chunk_index: int) -> str:
+    row = conn.execute("SELECT chunk_text FROM session_chunks WHERE session_id = ? AND chunk_index = ?",
+                       (session_id, chunk_index)).fetchone()
+    return row["chunk_text"] if row else ""
+
+
 def _tool_search(conn, args: dict) -> str:
     query = args.get("query", "").strip()
     if not query:
         return "Error: query is required"
+    if args.get("refresh"):
+        scanner.scan(conn)
     results = fts_search(
         conn, query,
         limit=args.get("limit", 10),
         layer=args.get("layer"),
         bm25_only=args.get("bm25_only", False),
     )
+    note = _stale_note(conn)
     if not results:
-        return f"No results found for: {query}"
+        return f"No results found for: {query}" + note
 
+    expand = args.get("expand", 0) or 0
     lines = [f"{len(results)} result(s) for \"{query}\":\n"]
     for r in results:
+        if expand and r.result_type == "chunk" and r.chunk_index is not None:
+            expand -= 1
+            text = _chunk_text(conn, r.id, r.chunk_index)
+            more = len(text) - EXPAND_CHARS
+            lines.append(f"[{r.id[:8]}]  {(r.date or '')[:10]}  chunk {r.chunk_index}  "
+                         f"{(r.project_dir or '').split('/')[-1]}")
+            lines.append(text[:EXPAND_CHARS] + (
+                f"\n  … {more:,} more chars: medulla_session_detail(session_id=\"{r.id[:8]}\", "
+                f"chunk_index={r.chunk_index})" if more > 0 else "") + "\n")
+            continue
         date = (r.date or "")[:10]
         proj = (r.project_dir or "").split("/")[-1]
         if r.result_type == "tool_event":
@@ -387,6 +446,67 @@ def _tool_search(conn, args: dict) -> str:
         if r.chunk_index is not None:
             lines.append(f"  → medulla_session_detail(session_id=\"{r.id[:8]}\", chunk_index={r.chunk_index})")
         lines.append(f"  {r.excerpt}\n")
+    return "\n".join(lines) + note
+
+
+_PART = re.compile(r"^(.*?)(?:Part\d+)?$")
+_REPORT = re.compile(r"immediate next action", re.I)
+_REPORT_START = re.compile(r"(?im)^#+\s*(?:handoff|1\.\s*overarching goal)")
+
+
+def _resolve(conn, name: str):
+    rows = conn.execute("""SELECT session_id, slug, project_dir, started_at, ended_at, turn_count
+                           FROM sessions WHERE lower(slug) = lower(?) ORDER BY started_at DESC""", (name,)).fetchall()
+    if not rows:
+        rows = conn.execute("""SELECT session_id, slug, project_dir, started_at, ended_at, turn_count
+                               FROM sessions WHERE session_id LIKE ? ORDER BY started_at DESC""", (name + "%",)).fetchall()
+    return rows[0] if rows else None
+
+
+def _tool_resume(conn, args: dict) -> str:
+    name = (args.get("name") or "").strip()
+    if not name:
+        return "Error: name is required"
+    indexed = []
+    for p in scanner.stale_sessions(conn, settle_s=0):
+        if p.stem.startswith(name) or scanner.title_of(p) == name:
+            if scanner.index_session(conn, p) == "indexed":
+                indexed.append(p.stem)
+    s = _resolve(conn, name)
+    if s is None:
+        titles = [r[0] for r in conn.execute("SELECT DISTINCT slug FROM sessions WHERE slug IS NOT NULL")]
+        close = difflib.get_close_matches(name, titles, n=5, cutoff=0.6)
+        return (f"Session '{name}' not found by title or id prefix."
+                + (f" Closest titles: {', '.join(close)}" if close else ""))
+
+    sid, slug = s["session_id"], s["slug"] or s["session_id"]
+    chunks = conn.execute("SELECT chunk_index, chunk_text FROM session_chunks WHERE session_id = ? "
+                          "ORDER BY chunk_index", (sid,)).fetchall()
+    lines = [f"medulla_resume: {slug}  ({sid[:8]}, {(s['project_dir'] or '').split('/')[-1]}, "
+             f"{(s['started_at'] or '')[:16]} → {(s['ended_at'] or '')[:16]}, {s['turn_count']} turns, "
+             f"{len(chunks)} chunks)" + ("  — indexed now" if sid in indexed else "")]
+
+    stem = _PART.match(slug).group(1)
+    parts = [r for r in conn.execute("SELECT session_id, slug, started_at, turn_count FROM sessions "
+                                     "WHERE slug = ? OR slug LIKE ? ORDER BY started_at", (stem, stem + "Part%"))
+             if _PART.match(r["slug"]).group(1) == stem]
+    if len(parts) > 1:
+        lines += ["", "Parts (oldest first):"]
+        for r in parts:
+            mark = "▸" if r["session_id"] == sid else " "
+            lines.append(f"  {mark} {r['slug']:<34} {(r['started_at'] or '')[:10]}  {r['turn_count']:>4} turns  {r['session_id'][:8]}")
+
+    hits = [i for i, c in enumerate(chunks) if _REPORT.search(c["chunk_text"])]
+    if hits:
+        k = hits[-1]
+        while k > 0 and not _REPORT_START.search(chunks[k]["chunk_text"]) and k > hits[-1] - 2:
+            k -= 1
+        body = "\n".join(c["chunk_text"] for c in chunks[k:])
+        lines += ["", f"Handoff report (chunks {k}–{len(chunks) - 1}):", body[:4 * EXPAND_CHARS]]
+    else:
+        n = max(1, args.get("last", 2) or 2)
+        lines += ["", f"No handoff report in this session — its last {min(n, len(chunks))} chunk(s):"]
+        lines += [c["chunk_text"][:EXPAND_CHARS] for c in chunks[-n:]]
     return "\n".join(lines)
 
 

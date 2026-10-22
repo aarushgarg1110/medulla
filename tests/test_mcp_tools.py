@@ -12,6 +12,7 @@ from medulla.mcp import (  # noqa: E402
     _tool_events_search,
     _tool_analyze,
     _dispatch,
+    _tool_resume,
 )
 from tests.test_store import make_session, make_agent
 
@@ -772,3 +773,176 @@ def test_dispatch_uses_cached_conn(monkeypatch, db):
     monkeypatch.setattr(mcp_mod, "connect", lambda *a, **k: db)
     out = _dispatch("medulla_stats", {})
     assert "Episodic" in out
+
+
+# ── one-call recall: search expand, staleness, resume ──────────────────────────
+# Measured 2026-10-22 over 213 sessions: medulla_search → medulla_session_detail ran 84 times in
+# 45 sessions (69 of them ad-hoc recall, not pickoff), and pickoff ran scan → list → detail on
+# every resume. Each of these tests pins one call that used to take two or three.
+
+import dataclasses
+import json
+import os
+import time
+
+
+def _titled(session_id, slug, messages, started="2026-01-01T10:00:00Z"):
+    return dataclasses.replace(make_session(session_id, messages=messages), slug=slug, started_at=started)
+
+
+def test_search_expand_inlines_the_full_chunk(db):
+    upsert_session(db, make_session("sess-exp", messages=["expandterm " + "detail " * 60] * 3))
+    out = _tool_search(db, {"query": "expandterm", "expand": 1})
+    assert out.count("detail") > 60                      # the whole chunk, not a 200-char excerpt
+    assert "→ medulla_session_detail" not in out.split("\n\n")[1]
+
+
+def test_search_expand_caps_a_long_chunk_and_points_at_the_rest(db, monkeypatch):
+    import medulla.mcp as mcp_mod
+    monkeypatch.setattr(mcp_mod, "EXPAND_CHARS", 300)
+    upsert_session(db, make_session("sess-cap", messages=["captermx " + "word " * 400] * 2))
+    out = _tool_search(db, {"query": "captermx", "expand": 1})
+    assert "more chars" in out and "medulla_session_detail" in out
+
+
+def test_search_without_expand_is_unchanged(db):
+    upsert_session(db, make_session("sess-noexp", messages=["plainterm content"] * 25))
+    out = _tool_search(db, {"query": "plainterm"})
+    assert "→ medulla_session_detail" in out
+
+
+@pytest.fixture
+def projects(tmp_path, monkeypatch):
+    p = tmp_path / "projects" / "-proj-a"
+    p.mkdir(parents=True)
+    monkeypatch.setattr("medulla.episodic.scanner.CLAUDE_PROJECTS_DIR", tmp_path / "projects")
+    return p
+
+
+def _write(path, title, text="handoff body", age_s=600):
+    lines = [{"type": "custom-title", "customTitle": title},
+             {"sessionId": path.stem, "cwd": "/proj/a", "gitBranch": "main", "timestamp": "2026-01-01T10:00:00Z",
+              "type": "user", "message": {"role": "user", "content": f"please {text}"}},
+             {"sessionId": path.stem, "timestamp": "2026-01-01T10:01:00Z", "type": "assistant",
+              "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}}]
+    path.write_text("\n".join(json.dumps(x) for x in lines))
+    t = time.time() - age_s
+    os.utime(path, (t, t))
+
+
+def test_search_reports_transcripts_changed_since_they_were_indexed(db, projects):
+    upsert_session(db, make_session("sess-stale", messages=["staleterm"] * 3))
+    _write(projects / "sess-unindexed.jsonl", "fooPart4")
+    out = _tool_search(db, {"query": "staleterm"})
+    assert "1 transcript" in out and "fooPart4" in out and "refresh" in out
+
+
+def test_search_ignores_a_transcript_still_being_written(db, projects):
+    upsert_session(db, make_session("sess-live", messages=["liveterm"] * 3))
+    _write(projects / "sess-writing.jsonl", "liveSession", age_s=5)
+    assert "changed since" not in _tool_search(db, {"query": "liveterm"})
+
+
+def test_search_refresh_scans_first(db, projects, monkeypatch):
+    calls = []
+    monkeypatch.setattr("medulla.episodic.scanner.scan", lambda conn, **kw: calls.append(kw) or {})
+    _tool_search(db, {"query": "anything", "refresh": True})
+    assert calls == [{}]
+
+
+def test_resume_returns_the_handoff_and_the_parts_chain(db):
+    report = "## 4. Immediate next action\nWrite the PSYC3200 outline."
+    upsert_session(db, _titled("s1", "hippo", ["start hippo"], "2026-10-10T10:00:00Z"))
+    upsert_session(db, _titled("s2", "hippoPart2", ["more hippo"], "2026-10-11T10:00:00Z"))
+    upsert_session(db, _titled("s3", "hippoPart3", ["final hippo", report], "2026-10-12T10:00:00Z"))
+    out = _tool_resume(db, {"name": "hippoPart3"})
+    assert "Write the PSYC3200 outline" in out
+    parts = out.split("Parts (oldest first):")[1].split("Handoff report")[0]
+    assert parts.index(" hippo ") < parts.index("hippoPart2") < parts.index("hippoPart3")
+
+
+def test_resume_without_a_handoff_returns_the_last_chunks(db):
+    upsert_session(db, _titled("s9", "noHandoff", [f"turn {i} " + "x " * 120 for i in range(30)]))
+    out = _tool_resume(db, {"name": "noHandoff", "last": 2})
+    assert "no handoff report" in out.lower() and "turn 29" in out
+
+
+def test_resume_indexes_a_session_that_ended_after_the_last_scan(db, projects):
+    _write(projects / "sess-fresh.jsonl", "barPart3", text="## Immediate next action\nship it")
+    out = _tool_resume(db, {"name": "barPart3"})
+    assert "ship it" in out and "indexed now" in out
+
+
+def test_resume_by_session_id_prefix(db):
+    upsert_session(db, _titled("abcdef12-0000", "byPrefix", ["prefix body"]))
+    assert "byPrefix" in _tool_resume(db, {"name": "abcdef12"})
+
+
+def test_resume_unknown_name_lists_the_closest_titles(db, projects):
+    upsert_session(db, _titled("s5", "inferenceOptimizationPart9", ["x"]))
+    out = _tool_resume(db, {"name": "inferenceOptimisation"})
+    assert "not found" in out.lower() and "inferenceOptimizationPart9" in out
+
+
+def test_resume_requires_a_name(db):
+    assert "name is required" in _tool_resume(db, {"name": "  "})
+
+
+def test_resume_indexes_only_the_session_it_was_asked_for(db, projects, monkeypatch):
+    _write(projects / "sess-wanted.jsonl", "wantedPart2")
+    _write(projects / "sess-other.jsonl", "otherPart5")
+    done = []
+    real = scanner_mod().index_session
+    monkeypatch.setattr("medulla.episodic.scanner.index_session", lambda conn, p: done.append(p.stem) or real(conn, p))
+    _tool_resume(db, {"name": "wantedPart2"})
+    assert done == ["sess-wanted"]
+
+
+def test_resume_does_not_claim_an_index_that_did_not_happen(db, projects, monkeypatch):
+    _write(projects / "sess-stubby.jsonl", "stubbyPart2")
+    monkeypatch.setattr("medulla.episodic.scanner.index_session", lambda conn, p: "skipped_empty")
+    assert "indexed now" not in _tool_resume(db, {"name": "stubbyPart2"})
+
+
+def test_resume_starts_the_report_at_its_heading_one_chunk_earlier(db, monkeypatch):
+    import medulla.mcp as mcp_mod
+    rows = [{"chunk_index": 0, "chunk_text": "earlier work"},
+            {"chunk_index": 1, "chunk_text": "# Handoff: fooPart2 → fooPart3\n## 1. Overarching goal\nship"},
+            {"chunk_index": 2, "chunk_text": "## 4. Immediate next action\nwrite the PR"}]
+    upsert_session(db, _titled("s-span", "fooPart2", ["placeholder"]))
+    real = db.execute
+
+    class Conn:
+        def execute(self, sql, params=()):
+            if "FROM session_chunks WHERE session_id" in sql and "ORDER BY chunk_index" in sql:
+                return type("Rows", (), {"fetchall": lambda self: rows})()
+            return real(sql, params)
+    out = _tool_resume(Conn(), {"name": "fooPart2"})
+    assert "Handoff report (chunks 1–2)" in out and "Overarching goal" in out and "earlier work" not in out
+
+
+def scanner_mod():
+    from medulla.episodic import scanner
+    return scanner
+
+
+def test_title_of_takes_the_last_rename_and_skips_bad_lines(tmp_path):
+    p = tmp_path / "s.jsonl"
+    p.write_text("\n".join([json.dumps({"type": "custom-title", "customTitle": "first"}),
+                            '{"type": "custom-title", broken',
+                            json.dumps({"type": "custom-title", "customTitle": ""}),
+                            json.dumps({"type": "user", "note": "mentions custom-title in passing"}),
+                            json.dumps({"type": "custom-title", "customTitle": "second"})]))
+    assert scanner_mod().title_of(p) == "second"
+
+
+def test_stale_sessions_skip_stubs_and_unchanged_sessions(db, projects):
+    s = scanner_mod()
+    stub = projects / "sess-stub.jsonl"
+    stub.write_text(json.dumps({"type": "summary", "summary": "nothing here"}))
+    t = time.time() - 600
+    os.utime(stub, (t, t))
+    _write(projects / "test-session-id.jsonl", "indexedOne")
+    s.index_session(db, projects / "test-session-id.jsonl")
+    _write(projects / "sess-new.jsonl", "newOne")
+    assert [p.stem for p in s.stale_sessions(db)] == ["sess-new"]
