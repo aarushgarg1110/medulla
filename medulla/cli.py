@@ -689,6 +689,40 @@ def ingest(
 wiki_app = typer.Typer(help="Wiki management commands.")
 app.add_typer(wiki_app, name="wiki")
 
+statusline_app = typer.Typer(help="Claude Code statusline: context bar, and the window size autohandoff reads.")
+app.add_typer(statusline_app, name="statusline")
+
+
+@statusline_app.command(name="setup")
+def statusline_setup(
+    yes: Annotated[bool, typer.Option("--yes", help="Apply without asking")] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Only say what would change")] = False,
+    tap: Annotated[bool, typer.Option("--tap", help="Install only the launcher, and print the line for your own script")] = False,
+):
+    """Add medulla's statusline, or wrap yours so it keeps its output; settings.json is backed up first."""
+    from medulla import statusline_setup as sl
+
+    if tap:
+        sl.install_launcher()
+        console.print("Add this line where your statusline script has read its JSON into $input:\n"
+                      + sl.tap_line(), markup=False, highlight=False, soft_wrap=True)
+        return
+    p = sl.plan()
+    console.print(sl.describe(p), markup=False, highlight=False, soft_wrap=True)
+    if p["mode"] == "present" or dry_run:
+        return
+    if not yes and not typer.confirm("Apply?"):
+        raise typer.Exit(1)
+    console.print(f"Done. statusLine command: {sl.apply()['command']}", markup=False, highlight=False, soft_wrap=True)
+
+
+@statusline_app.command(name="undo")
+def statusline_undo():
+    """Remove medulla's statusline, or restore the one it wrapped."""
+    from medulla import statusline_setup as sl
+
+    console.print(sl.undo(), markup=False, highlight=False, soft_wrap=True)
+
 
 @wiki_app.command(name="list")
 def wiki_list(

@@ -55,7 +55,7 @@ def _frontmatter(path: Path) -> tuple[dict, str]:
 def test_every_skill_is_a_portable_agent_skill():
     """Claude Code and Kiro both load a SKILL.md folder that has a name and a description."""
     skills = sorted((ROOT / "skills").glob("*/SKILL.md"))
-    assert [p.parent.name for p in skills] == ["handoff", "pickoff"]
+    assert [p.parent.name for p in skills] == ["handoff", "pickoff", "statusline"]
     for p in skills:
         meta, _ = _frontmatter(p)
         assert meta["name"] == p.parent.name and len(meta["description"]) > 50

@@ -889,8 +889,19 @@ def serve() -> None:  # pragma: no cover
     anyio.run(_serve)
 
 
+def _refresh_statusline() -> None:
+    """A plugin update moves medulla's files; re-point the statusline launcher, if the user installed
+    one, at this copy. Never raises: the statusline must not keep the server from starting."""
+    try:
+        from medulla.statusline_setup import refresh_target
+        refresh_target()
+    except Exception:
+        pass
+
+
 async def _serve() -> None:  # pragma: no cover
     _prewarm_embeddings()
+    _refresh_statusline()
     async with stdio_server() as (read_stream, write_stream):
         await _server.run(
             read_stream,
