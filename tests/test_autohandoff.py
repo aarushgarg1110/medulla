@@ -20,7 +20,7 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
     for k in ("MEDULLA_AUTOHANDOFF", "MEDULLA_AUTOHANDOFF_AT", "MEDULLA_CONTEXT_WINDOW",
               "CLAUDE_PLUGIN_OPTION_AUTOHANDOFF", "CLAUDE_PLUGIN_OPTION_AUTOHANDOFF_AT",
-              "CLAUDE_PLUGIN_OPTION_CONTEXT_WINDOW"):
+              "CLAUDE_PLUGIN_OPTION_CONTEXT_WINDOW", "CLAUDE_CODE_SESSION_ID"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setattr(ah, "_sleep", lambda s: None)
     return tmp_path
@@ -138,6 +138,7 @@ def test_a_failed_open_is_reported(home):
     ah._mark("s1", "", "user")
     out = ah.on_stop(stop(home, 10, last_assistant_message=REPORT), lambda p, n, e: (False, "no terminal"))
     assert "could not open fooPart4: no terminal" in out["systemMessage"]
+    assert "medulla nextpart --from fooPart3" in out["systemMessage"]
 
 
 def test_the_open_is_recorded_before_it_is_attempted(home):
@@ -179,6 +180,7 @@ def test_an_interrupted_open_is_reported_on_the_next_prompt(home, monkeypatch):
     out = ah.on_prompt({"session_id": "s1", "prompt": "where is part 4?"})
     assert "opening fooPart4 was interrupted" in out["systemMessage"]
     assert "cd /work && claude -n fooPart4 '/medulla:pickoff fooPart3" in out["systemMessage"]
+    assert "medulla nextpart --from fooPart3" in out["systemMessage"]
     assert out["hookSpecificOutput"]["additionalContext"] == out["systemMessage"]
     assert logged(home)[-1] == {**logged(home)[-1], "action": "spawn", "ok": False, "detail": "interrupted"}
     assert ah.on_prompt({"session_id": "s1", "prompt": "and now?"}) is None      # reported once
@@ -195,6 +197,50 @@ def test_running_means_the_next_part_process_exists(monkeypatch):
     from medulla import terminals
     monkeypatch.setattr(terminals, "claude_started", lambda nxt: lambda: nxt == "fooPart4")
     assert ah._running("fooPart4") and not ah._running("fooPart5")
+
+
+# ── nextpart: open the next part by hand ──────────────────────────────────────
+
+def this_session(home, monkeypatch, title="fooPart3", sid="s9"):
+    """The Claude session the command runs in: CLAUDE_CODE_SESSION_ID and its transcript."""
+    (home / "projects" / "p").mkdir(parents=True)
+    rows = ([{"type": "custom-title", "customTitle": title}] if title else []) + [{"type": "user"}]
+    (home / "projects" / "p" / f"{sid}.jsonl").write_text("\n".join(json.dumps(r) for r in rows))
+    monkeypatch.setattr("medulla.episodic.scanner.CLAUDE_PROJECTS_DIR", home / "projects")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", sid)
+
+
+def test_nextpart_continues_this_session_and_marks_it_handed_off(home, monkeypatch):
+    this_session(home, monkeypatch)
+    calls = []
+    ok, msg = ah.nextpart(spawn=lambda p, n, e: calls.append((p, n, e["cwd"])) or (True, "opened"))
+    assert ok and msg == "fooPart4: opened" and calls == [("fooPart3", "fooPart4", os.getcwd())]
+    assert ah._spawned("s9").read_text() == "fooPart4" and logged(home)[-1]["detail"] == "nextpart: opened"
+
+
+def test_nextpart_from_another_session_leaves_this_one_alone(home, monkeypatch):
+    this_session(home, monkeypatch)
+    ok, msg = ah.nextpart("barPart1", spawn=lambda p, n, e: (True, "opened"))
+    assert ok and msg == "barPart2: opened" and not ah._spawned("s9").exists()
+
+
+def test_nextpart_dry_run_opens_nothing(home):
+    ok, msg = ah.nextpart("fooPart3", dry_run=True, spawn=None)
+    assert ok and msg.startswith("would run: cd ") and "claude -n fooPart4 '/medulla:pickoff fooPart3" in msg
+
+
+def test_nextpart_without_a_title_says_how(home, monkeypatch):
+    this_session(home, monkeypatch, title=None)
+    ok, msg = ah.nextpart(spawn=None)
+    assert not ok and "pass --from <title>" in msg
+    monkeypatch.setattr("medulla.episodic.scanner.CLAUDE_PROJECTS_DIR", home / "nowhere")
+    assert ah.current_session() == ("s9", None)
+
+
+def test_a_failed_nextpart_is_reported_and_not_marked(home, monkeypatch):
+    this_session(home, monkeypatch)
+    ok, msg = ah.nextpart(spawn=lambda p, n, e: (False, "no terminal"))
+    assert not ok and msg == "could not open fooPart4: no terminal" and not ah._spawned("s9").exists()
 
 
 def test_an_unreadable_opening_record_is_ignored(home):

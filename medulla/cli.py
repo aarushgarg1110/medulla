@@ -109,6 +109,20 @@ def resume(
         raise typer.Exit(1)
 
 
+@app.command()
+def nextpart(
+    from_: Annotated[Optional[str], typer.Option("--from", help="Title of the session to continue (default: the session this runs in)")] = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Print the command instead of opening it")] = False,
+):
+    """Open the next part of a session beside it, running /medulla:pickoff on it."""
+    from medulla import autohandoff
+
+    ok, message = autohandoff.nextpart(from_, dry_run)
+    console.print(message, markup=False, highlight=False, soft_wrap=True)
+    if not ok:
+        raise typer.Exit(1)
+
+
 # ── eval ─────────────────────────────────────────────────────────────────────
 
 @app.command(name="eval")

@@ -15,6 +15,7 @@ finally the transcript itself, since more than 200k tokens can only fit the 1M w
 Fails open: any error means no output, because a missed handoff is recoverable and a blocked stop is not.
 An open is recorded before it is attempted, so one the hook does not live to finish (the Mac slept and
 Claude killed the hook on wake) is reported on the session's next prompt instead of vanishing.
+`medulla nextpart` opens the next part by hand, through the same terminal adapters.
 """
 from __future__ import annotations
 
@@ -230,7 +231,8 @@ def interrupted(sid: str) -> str | None:
         return None
     _log(sid=sid, action="spawn", ok=False, prev=prev, next=nxt, detail="interrupted")
     return (f"autohandoff: opening {nxt} was interrupted before it finished, and it is not running. "
-            f"Run it yourself: cd {shlex.quote(rec['cwd'])} && {launch_line(prev, nxt)}")
+            f"Open it with `medulla nextpart --from {prev}`, or run it yourself: "
+            f"cd {shlex.quote(rec['cwd'])} && {launch_line(prev, nxt)}")
 
 
 def on_prompt(event: dict) -> dict | None:
@@ -280,7 +282,8 @@ def on_stop(event: dict, spawn) -> dict | None:
         _opening(sid).unlink()
         _log(sid=sid, action="spawn", ok=ok, prev=prev, next=nxt, detail=detail)
         if not ok:
-            return {"systemMessage": f"autohandoff: could not open {nxt}: {detail}"}
+            return {"systemMessage": f"autohandoff: could not open {nxt}: {detail} "
+                                     f"Or retry with `medulla nextpart --from {prev}`."}
         _spawned(sid).write_text(nxt)
         return {"systemMessage": f"autohandoff: {nxt}: {detail}"}
     if event.get("stop_hook_active"):
@@ -292,6 +295,37 @@ def on_stop(event: dict, spawn) -> dict | None:
     _flag(sid).write_text("hook")
     _log(sid=sid, action="request", pct=round(pct, 1))
     return {"decision": "block", "reason": NUDGE.format(pct=pct, at=threshold(), src=threshold_source())}
+
+
+def current_session() -> tuple[str | None, str | None]:
+    """(id, title) of the Claude session this command runs in, from CLAUDE_CODE_SESSION_ID."""
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not sid:
+        return None, None
+    from medulla.episodic import scanner
+    hit = next(scanner.CLAUDE_PROJECTS_DIR.glob(f"*/{sid}.jsonl"), None)
+    return sid, (scanner.title_of(hit) if hit else None)
+
+
+def nextpart(from_title: str | None = None, dry_run: bool = False, spawn=terminal_spawn) -> tuple[bool, str]:
+    """Open the next part by hand, beside this session or the one titled from_title: after an open that
+    failed or was interrupted, or whenever the user wants it now. Continuing this session marks it
+    handed off, so autohandoff does not open a second one."""
+    sid, own = current_session()
+    title = from_title or own
+    if not title:
+        return False, "no session to continue: this one has no /rename title, so pass --from <title>"
+    nxt, prev = next_names(title)
+    cwd = os.getcwd()
+    if dry_run:
+        return True, f"would run: cd {shlex.quote(cwd)} && {launch_line(prev, nxt)}"
+    ok, detail = spawn(prev, nxt, {"cwd": cwd})
+    _log(sid=sid, action="spawn", ok=ok, prev=prev, next=nxt, detail=f"nextpart: {detail}")
+    if not ok:
+        return False, f"could not open {nxt}: {detail}"
+    if sid and title == own:
+        _spawned(sid).write_text(nxt)
+    return True, f"{nxt}: {detail}"
 
 
 def main(stdin=sys.stdin, stdout=sys.stdout, spawn=terminal_spawn) -> None:

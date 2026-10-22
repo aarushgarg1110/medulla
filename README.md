@@ -238,7 +238,7 @@ claude plugin install medulla@medulla --config autohandoff=true
 - **The environment threshold has no floor.** It exists for testing: set below a fresh session's starting
   context, every part hands off on its first turn.
 - **macOS terminals need an awake display.** With the lid closed, use tmux. If the Mac sleeps while a part
-  is opening, your next prompt in that session tells you and gives you the command.
+  is opening, your next prompt in that session tells you; `medulla nextpart` opens it by hand.
 - **The window size** is reported only to the statusline. `/medulla:statusline` adds a context bar that
   records it, or wraps the statusline you have without changing its output. Without it, medulla uses the
   configured size, then a `[1m]` model in your settings, then 200k, and switches to 1M once the context
@@ -254,6 +254,7 @@ The CLI is for you; the MCP tools are what Claude calls. Most capabilities have 
 | Search sessions, wiki and commands | `medulla search "<query>" [--layer episodic\|semantic\|events] [--bm25-only] [-n N]` | `medulla_search` |
 | Read the top hits in full | `medulla search "<query>" --expand N` | `medulla_search` with `expand` |
 | Resume a session | `medulla resume <name>` | `medulla_resume` |
+| Open the next part by hand | `medulla nextpart [--from <title>] [--dry-run]` | |
 | Recent sessions | `medulla list [--project <path>]` | `medulla_list` |
 | A session's chunks, agents and files | `medulla session-detail <id> [--chunk N]` | `medulla_session_detail` |
 | A session and its subagents | | `medulla_session_tree` |
@@ -343,7 +344,8 @@ caches them, then restart Claude Code.
 <summary><b>Autohandoff didn't open the next part.</b></summary>
 
 Read the message after the report, then `~/.medulla/state/autohandoff.log.jsonl`, which records each
-request, attempt and result. A session without a name cannot be handed off: name it with `/rename`.
+request, attempt and result. `medulla nextpart` opens the next part by hand. A session without a name
+cannot be handed off: name it with `/rename`.
 </details>
 
 <details>
