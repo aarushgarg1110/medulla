@@ -1,10 +1,8 @@
-"""The repo is also a Claude Code plugin: one install brings the MCP server and the CLI (and, in later
-steps, the skills and hooks). Claude Code drops a component whose path is missing without failing the
+"""The repo is also a Claude Code plugin: one install brings the MCP server (and, in later steps, the
+skills and hooks). Claude Code drops a component whose path is missing without failing the
 install, so a broken manifest would surface on a tester's machine as "the tools aren't there". These
 tests check it in CI instead."""
 import json
-import stat
-import subprocess
 import tomllib
 from pathlib import Path
 
@@ -45,10 +43,3 @@ def test_the_marketplace_lists_this_repo_as_its_one_plugin():
     mk = _manifest("marketplace.json")
     assert [(p["name"], p["source"]) for p in mk["plugins"]] == [("medulla", "./")]
 
-
-def test_bin_medulla_runs_the_cli_from_its_own_checkout():
-    """Plugin `bin/` is on the Bash tool's PATH, so this is the `medulla` a plugin-only user gets."""
-    b = ROOT / "bin" / "medulla"
-    assert b.stat().st_mode & stat.S_IXUSR
-    r = subprocess.run([str(b), "--help"], capture_output=True, text=True, timeout=120, cwd="/")
-    assert r.returncode == 0 and "scan" in r.stdout
