@@ -514,3 +514,90 @@ def test_search_uses_hybrid_when_embeddings_exist(db):
     _insert_with_embedding(db, "sess-auto", ["auto hybrid detection content"] * 25)
     results = search(db, "auto hybrid detection")
     assert len(results) > 0
+
+
+# ── Search must still answer when the vector side fails ──────────────────────
+# Each of these paths returned results or [] by design but was never exercised, so a refactor
+# could turn a degraded answer into an exception without any test noticing.
+
+def _embed_all(db):
+    from medulla.db.embedding_store import upsert_chunk_embedding
+    from medulla.search import _get_search_embedding_provider
+    prov = _get_search_embedding_provider()
+    for row in db.execute("SELECT session_id, chunk_index, chunk_text FROM session_chunks").fetchall():
+        upsert_chunk_embedding(db, row["session_id"], row["chunk_index"], prov.embed([row["chunk_text"]])[0])
+
+
+class _BrokenProvider:
+    def embed(self, texts):
+        raise RuntimeError("model crashed")
+
+
+def test_search_falls_back_to_keywords_when_the_model_will_not_load(db, monkeypatch):
+    import medulla.search as s
+    _insert(db, "sess-fb", ["fallbackterm content"] * 3)
+    _embed_all(db)
+
+    def no_model():
+        raise RuntimeError("no torch")
+    monkeypatch.setattr(s, "_get_search_embedding_provider", no_model)
+    assert [r.id for r in s.search(db, "fallbackterm")] == ["sess-fb"]
+
+
+def test_hybrid_search_falls_back_to_keywords_when_embedding_fails(db):
+    from medulla.search import hybrid_search
+    _insert(db, "sess-hb", ["hybridfallback words"] * 3)
+    assert [r.id for r in hybrid_search(db, "hybridfallback", provider=_BrokenProvider())] == ["sess-hb"]
+
+
+def test_hybrid_search_with_an_empty_query_returns_nothing(db):
+    from medulla.search import hybrid_search
+    assert hybrid_search(db, "   ") == []
+
+
+def test_missing_fts_tables_return_nothing_instead_of_raising(db):
+    from medulla.search import _search_chunks, _search_tool_events
+    db.execute("DROP TABLE IF EXISTS session_chunks_fts")
+    db.execute("DROP TABLE IF EXISTS tool_events_fts")
+    db.commit()
+    assert _search_chunks(db, '"x"', 5) == [] and _search_tool_events(db, "x", 5) == []
+
+
+def test_command_search_with_no_tokens_returns_nothing(db):
+    from medulla.search import _search_tool_events
+    assert _search_tool_events(db, "   ", 5) == []
+
+
+@pytest.fixture
+def wiki_page_with_vector(db):
+    from pathlib import Path
+    from medulla.db.embedding_store import upsert_wiki_embedding
+    from medulla.search import _get_search_embedding_provider
+    from medulla.semantic.store import upsert_wiki_page
+    upsert_wiki_page(db, "layer-wiki", "concept", "Layer Wiki", "layerterm wiki text",
+                     Path("/wiki/concepts/layer-wiki.md"))
+    upsert_wiki_embedding(db, "layer-wiki", _get_search_embedding_provider().embed(["layerterm wiki text"])[0])
+
+
+def test_vector_legs_respect_the_layer_filter(db, wiki_page_with_vector):
+    from medulla.search import hybrid_search
+    _insert(db, "sess-layer", ["layerterm session text"] * 3)
+    _embed_all(db)
+    assert {r.layer for r in hybrid_search(db, "layerterm", layer="episodic")} == {"episodic"}
+    assert {r.layer for r in hybrid_search(db, "layerterm", layer="semantic")} == {"semantic"}
+
+
+def test_a_wiki_page_found_only_by_its_vector_is_returned(db, wiki_page_with_vector):
+    from medulla.search import hybrid_search
+    out = hybrid_search(db, "qqzz nothing matches these words", layer="semantic")
+    assert [(r.result_type, r.id) for r in out] == [("wiki_page", "layer-wiki")]
+
+
+def test_the_search_model_is_loaded_once_per_process(monkeypatch):
+    import medulla.embeddings as emb
+    import medulla.search as s
+    monkeypatch.undo()                     # drop conftest's mock so the real loader runs
+    made = []
+    monkeypatch.setattr(emb, "get_embedding_provider", lambda: made.append(1) or object())
+    monkeypatch.setattr(s, "_search_embedding_provider", None)
+    assert s._get_search_embedding_provider() is s._get_search_embedding_provider() and made == [1]

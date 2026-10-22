@@ -180,3 +180,57 @@ def test_discover_files_kiro_filter(tmp_path, monkeypatch):
 
     sessions2, _ = _discover_files(source="claude")
     assert len(sessions2) == 0
+
+
+# ── A scan must finish whatever one file does ─────────────────────────────────
+
+def test_a_subagent_that_changed_after_indexing_is_reindexed(db, tmp_path, monkeypatch):
+    import os
+    monkeypatch.setattr("medulla.episodic.scanner.CLAUDE_PROJECTS_DIR", tmp_path)
+    monkeypatch.setattr("medulla.episodic.scanner.KIRO_SESSIONS_DIR", tmp_path / "kiro-missing")
+    p = _write_agent_session(tmp_path, "parent-1", "ag1")
+    assert scan(db)["agents_indexed"] == 1
+    t = time.time() + 5
+    os.utime(p, (t, t))
+    assert scan(db)["agents_indexed"] == 1
+
+
+def test_a_broken_subagent_file_does_not_stop_the_scan(db, tmp_path, monkeypatch):
+    monkeypatch.setattr("medulla.episodic.scanner.CLAUDE_PROJECTS_DIR", tmp_path)
+    monkeypatch.setattr("medulla.episodic.scanner.KIRO_SESSIONS_DIR", tmp_path / "kiro-missing")
+    _write_session(tmp_path, "sess-ok", ["fine"])
+    _write_agent_session(tmp_path, "sess-ok", "bad")
+
+    def corrupt(*a):
+        raise ValueError("corrupt line")
+    monkeypatch.setattr("medulla.episodic.scanner._process_agent", corrupt)
+    r = scan(db)
+    assert (r["indexed"], r["agents_indexed"]) == (1, 0)
+
+
+def test_an_embedding_failure_does_not_block_indexing(db, tmp_path, monkeypatch):
+    class Broken:
+        def embed(self, texts):
+            raise RuntimeError("no model")
+    monkeypatch.setattr("medulla.episodic.scanner.CLAUDE_PROJECTS_DIR", tmp_path)
+    monkeypatch.setattr("medulla.episodic.scanner.KIRO_SESSIONS_DIR", tmp_path / "kiro-missing")
+    monkeypatch.setattr("medulla.episodic.scanner._get_embedding_provider", lambda: Broken())
+    _write_session(tmp_path, "sess-noemb", ["still indexed"])
+    assert scan(db)["indexed"] == 1 and [r["session_id"] for r in list_sessions(db)] == ["sess-noemb"]
+
+
+def test_chunks_that_already_have_vectors_are_not_embedded_again(db, tmp_path, monkeypatch):
+    from medulla.episodic.scanner import _embed_session_chunks
+    calls = []
+
+    class Counting(_MockEmbedProvider):
+        def embed(self, texts):
+            calls.append(len(texts))
+            return super().embed(texts)
+    monkeypatch.setattr("medulla.episodic.scanner.CLAUDE_PROJECTS_DIR", tmp_path)
+    monkeypatch.setattr("medulla.episodic.scanner.KIRO_SESSIONS_DIR", tmp_path / "kiro-missing")
+    monkeypatch.setattr("medulla.episodic.scanner._get_embedding_provider", lambda: Counting())
+    _write_session(tmp_path, "sess-once", ["embed me"])
+    scan(db)
+    _embed_session_chunks(db, "sess-once")
+    assert len(calls) == 1
