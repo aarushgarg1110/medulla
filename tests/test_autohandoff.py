@@ -148,8 +148,9 @@ def test_a_handoff_claude_starts_through_the_skill_tool_is_marked(home):
     assert not (home / "medulla" / "state" / "s2.handoff").exists()
 
 
-def test_print_spawn_shows_the_command_to_run(home):
-    ok, detail = ah.print_spawn("fooPart3", "fooPart4", {"cwd": "/work"})
+def test_where_no_terminal_can_be_driven_the_command_is_printed(home, monkeypatch):
+    monkeypatch.setenv("MEDULLA_TERMINAL", "print")
+    ok, detail = ah.terminal_spawn("fooPart3", "fooPart4", {"cwd": "/work"})
     assert ok and detail == f"run in a new terminal: cd /work && {ah.launch_line('fooPart3', 'fooPart4')}"
     assert ah.launch_line("fooPart3", "fooPart4").startswith("claude -n fooPart4 '/medulla:pickoff fooPart3 ")
 

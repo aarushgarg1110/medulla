@@ -184,9 +184,12 @@ def launch_line(prev: str, nxt: str) -> str:
     return f"claude -n {shlex.quote(nxt)} {shlex.quote(pickoff)}"
 
 
-def print_spawn(prev: str, nxt: str, event: dict) -> tuple[bool, str]:
-    """The fallback for terminals medulla cannot drive: show the command to run."""
-    return True, f"run in a new terminal: cd {shlex.quote(event.get('cwd') or '.')} && {launch_line(prev, nxt)}"
+def terminal_spawn(prev: str, nxt: str, event: dict) -> tuple[bool, str]:
+    """Open the next part beside this session in its terminal (tmux, Ghostty, iTerm2, Terminal.app),
+    or print the command where medulla cannot drive the terminal."""
+    from medulla import terminals
+    return terminals.open_beside(launch_line(prev, nxt), event.get("cwd") or os.getcwd(), title=prev,
+                                 started=terminals.claude_started(nxt))
 
 
 def on_prompt(event: dict) -> dict | None:
@@ -238,7 +241,7 @@ def on_stop(event: dict, spawn) -> dict | None:
     return {"decision": "block", "reason": NUDGE.format(pct=pct, at=threshold())}
 
 
-def main(stdin=sys.stdin, stdout=sys.stdout, spawn=print_spawn) -> None:
+def main(stdin=sys.stdin, stdout=sys.stdout, spawn=terminal_spawn) -> None:
     try:
         if not enabled():
             return
