@@ -44,19 +44,35 @@ def search(
     limit: Annotated[int, typer.Option("--limit", "-n")] = 10,
     layer: Annotated[Optional[str], typer.Option("--layer", help="episodic | semantic | code | events")] = None,
     bm25_only: Annotated[bool, typer.Option("--bm25-only", help="Force keyword-only search, skip vector reranking")] = False,
+    expand: Annotated[int, typer.Option("--expand", help="Print the full text of the top N session-chunk hits")] = 0,
+    refresh: Annotated[bool, typer.Option("--refresh", help="Index transcripts changed since the last scan first")] = False,
 ):
     """Search across all memory layers. Uses hybrid BM25+vector search when embeddings exist."""
     from medulla.db.database import connect
+    from medulla.episodic import resume as recall
+    from medulla.episodic import scanner
     from medulla.search import search as do_search
 
     conn = connect()
+    if refresh:
+        scanner.scan(conn)
     results = do_search(conn, query, limit=limit, layer=layer, bm25_only=bm25_only)
+    note = recall.stale_note(conn, hint="Run with --refresh to index first.")
 
     if not results:
         console.print("[yellow]No results found.[/yellow]")
+        if note:
+            console.print(note, markup=False, highlight=False, soft_wrap=True)
         raise typer.Exit()
 
     for r in results:
+        if expand and r.result_type == "chunk" and r.chunk_index is not None:
+            expand -= 1
+            date_str = r.date[:10] if r.date else ""
+            console.print(f"\n[bold cyan]{r.id[:8]}[/bold cyan]  [dim]{date_str}  chunk {r.chunk_index}[/dim]")
+            read_on = f"medulla session-detail {r.id[:8]} --chunk {r.chunk_index}"
+            console.print(recall.expanded(conn, r.id, r.chunk_index, read_on), markup=False, highlight=False, soft_wrap=True)
+            continue
         if r.result_type == "tool_event":
             sid = r.id.split("#")[0][:8]
             date_str = r.date[:10] if r.date else ""
@@ -73,6 +89,24 @@ def search(
             label = f"[bold cyan]{r.id[:8]}[/bold cyan]  [dim]{date_str}  {proj}[/dim]{chunk_hint}"
         console.print(f"\n{label}")
         console.print(f"  [italic]{r.excerpt}[/italic]")
+    if note:
+        console.print(note, markup=False, highlight=False, soft_wrap=True)
+
+
+@app.command()
+def resume(
+    name: Annotated[str, typer.Argument(help="The session's /rename title (e.g. fooPart3) or a session-id prefix")],
+    last: Annotated[int, typer.Option("--last", help="Chunks to print when the session has no handoff report")] = 2,
+):
+    """Pick a session back up: index it if it changed, then print its handoff report and its parts."""
+    from medulla.db.database import connect
+    from medulla.episodic import resume as recall
+
+    try:
+        console.print(recall.resume(connect(), name, last=last), markup=False, highlight=False, soft_wrap=True)
+    except recall.NotFound as e:
+        console.print(str(e), markup=False, highlight=False, soft_wrap=True)
+        raise typer.Exit(1)
 
 
 # ── eval ─────────────────────────────────────────────────────────────────────

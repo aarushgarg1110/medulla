@@ -798,8 +798,7 @@ def test_search_expand_inlines_the_full_chunk(db):
 
 
 def test_search_expand_caps_a_long_chunk_and_points_at_the_rest(db, monkeypatch):
-    import medulla.mcp as mcp_mod
-    monkeypatch.setattr(mcp_mod, "EXPAND_CHARS", 300)
+    monkeypatch.setattr("medulla.episodic.resume.EXPAND_CHARS", 300)
     upsert_session(db, make_session("sess-cap", messages=["captermx " + "word " * 400] * 2))
     out = _tool_search(db, {"query": "captermx", "expand": 1})
     assert "more chars" in out and "medulla_session_detail" in out
