@@ -17,6 +17,7 @@ from pathlib import Path
 
 from medulla.episodic import scanner
 from medulla.episodic.resume import NotFound, not_found
+from medulla.episodic.store import delete_session_rows
 
 LIVE_S = 60   # a transcript written this recently belongs to a running session (the stale note's settle time)
 
@@ -75,11 +76,7 @@ def forget(conn: sqlite3.Connection, t: Target) -> str:
         conn.execute("INSERT INTO forgotten_sessions (session_id, source, slug, project_dir, started_at, turn_count, "
                      "forgotten_at) VALUES (?,?,?,?,?,?,?)", (sid, t.source, t.slug, t.project_dir, t.started_at,
                                                               t.turn_count, datetime.now(UTC).isoformat()))
-        conn.execute("DELETE FROM vec_chunks WHERE session_id = ?", (sid,))   # no delete trigger
-        conn.execute("DELETE FROM session_chunks WHERE session_id = ?", (sid,))
-        conn.execute("DELETE FROM tool_events WHERE session_id = ?", (sid,))
-        conn.execute("DELETE FROM agent_sessions WHERE parent_session_id = ?", (sid,))
-        conn.execute("DELETE FROM sessions WHERE session_id = ?", (sid,))
+        delete_session_rows(conn, sid)
     return (f"Forgot {_describe(t, _n(chunks, 'chunk'), _n(agents, 'subagent'))}: removed from the index, "
             f"and every scan now skips it.\n{_transcript_line(paths)}")
 

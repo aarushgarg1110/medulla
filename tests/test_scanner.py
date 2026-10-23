@@ -1,13 +1,15 @@
 """Tests for medulla.episodic.scanner — real files, real SQLite, no mocks."""
 import json
+import os
 import time
 from pathlib import Path
 
 import pytest
 
 from medulla.episodic.scanner import _discover_files, scan
-from medulla.episodic.store import get_session_scanned_at, list_sessions
+from medulla.episodic.store import get_session_scanned_at, list_sessions, upsert_session
 from tests.conftest import claude_assistant, claude_user, make_claude_jsonl
+from tests.test_store import make_session
 
 
 class _MockEmbedProvider:
@@ -234,3 +236,71 @@ def test_chunks_that_already_have_vectors_are_not_embedded_again(db, tmp_path, m
     scan(db)
     _embed_session_chunks(db, "sess-once")
     assert len(calls) == 1
+
+
+# ── a transcript that holds no conversation (v0.2.1) ───────────────────────────────────────────────
+
+@pytest.fixture
+def junk_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr("medulla.episodic.scanner.CLAUDE_PROJECTS_DIR", tmp_path)
+    monkeypatch.setattr("medulla.episodic.scanner.KIRO_SESSIONS_DIR", tmp_path / "kiro-missing")
+    (tmp_path / "my-project").mkdir()
+    return tmp_path / "my-project"
+
+
+def _junk(proj, sid, age_s=600):
+    """A prompt nobody answered: the parser drops it, and older parsers indexed it with 0 turns."""
+    path = proj / f"{sid}.jsonl"
+    path.write_text(make_claude_jsonl([claude_user("hello", session_id=sid)]))
+    t = time.time() - age_s
+    os.utime(path, (t, t))
+    return path
+
+
+def _count(db, table):
+    return db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+
+
+def test_a_transcript_that_now_parses_empty_loses_its_old_rows_on_rescan(db, junk_dir):
+    """21 of the 219 real transcripts parsed as empty but still had rows on 2026-10-23 (20 junk sessions and
+    ahtest2Part2): a re-parse that returned nothing left them in every list and search."""
+    _junk(junk_dir, "sess-old")
+    upsert_session(db, make_session("sess-old", turn_count=0, messages=["hello"]))
+    assert scan(db)["removed"] == 0            # unchanged since it was indexed, so not re-parsed
+    assert scan(db, force=True)["removed"] == 1
+    assert (_count(db, "sessions"), _count(db, "session_chunks")) == (0, 0)
+
+
+def test_a_blank_or_unreadable_transcript_keeps_its_rows(db, junk_dir):
+    """Then the rows may be the only copy left, which medulla exists to keep."""
+    path = _junk(junk_dir, "sess-old")
+    upsert_session(db, make_session("sess-old", turn_count=0, messages=["hello"]))
+    path.write_text("\n")
+    assert scan(db, force=True)["removed"] == 0
+    path.write_text(make_claude_jsonl([claude_user("hello", session_id="sess-old")]))
+    path.chmod(0)
+    try:
+        assert scan(db, force=True)["removed"] == 0
+    finally:
+        path.chmod(0o644)
+    assert _count(db, "sessions") == 1
+
+
+def test_an_unchanged_empty_transcript_is_not_parsed_again_or_reported_stale(db, junk_dir, monkeypatch):
+    """8 real transcripts that were never indexed were parsed on every scan, and the 4 holding a user entry
+    were named "changed since indexed" in every search footer (2026-10-23)."""
+    from medulla.episodic import scanner
+    _junk(junk_dir, "sess-hello")
+    assert [p.stem for p in scanner.stale_sessions(db)] == ["sess-hello"]
+    assert scan(db)["empty"] == 1
+    monkeypatch.setattr(scanner, "parse_session", lambda p: pytest.fail(f"parsed {p.name} again"))
+    assert scan(db)["empty"] == 0
+    assert scanner.stale_sessions(db) == []
+
+
+def test_an_empty_transcript_that_gets_a_reply_is_indexed(db, junk_dir):
+    path = _junk(junk_dir, "sess-hello")
+    scan(db)
+    path.write_text(path.read_text() + "\n" + json.dumps(claude_assistant(session_id="sess-hello")))
+    assert scan(db)["indexed"] == 1
+    assert _count(db, "empty_transcripts") == 0

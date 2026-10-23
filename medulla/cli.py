@@ -33,6 +33,7 @@ def scan(
         counts = do_scan(conn, force=force, source=source)
 
     empty_note = f", {counts['empty']} empty/stub" if counts.get('empty') else ""
+    empty_note += f", {counts['removed']} removed (no longer a conversation)" if counts.get('removed') else ""
     empty_note += f", {counts['forgotten']} forgotten" if counts.get('forgotten') else ""
     console.print(f"[green]✓[/green] Sessions: {counts['indexed']} indexed, {counts['skipped']} unchanged{empty_note}, {counts['errors']} errors")
     console.print(f"[green]✓[/green] Agents:   {counts['agents_indexed']} indexed, {counts['agents_skipped']} unchanged")

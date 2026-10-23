@@ -14,6 +14,7 @@ from medulla.episodic.parser import (
 from medulla.episodic.store import (
     upsert_session, upsert_agent_session, upsert_tool_events,
     get_session_scanned_at, get_agent_scanned_at, is_forgotten, forgotten_ids,
+    delete_session_rows, get_empty_mtime, mark_empty,
 )
 
 _USER_LINE = re.compile(r'"type":\s*"user"')
@@ -33,9 +34,9 @@ KIRO_SESSIONS_DIR = Path.home() / ".kiro" / "sessions"
 def scan(conn: sqlite3.Connection, force: bool = False, source: str | None = None) -> dict:
     """Scan session files and index new/changed ones.
 
-    Returns counts: {indexed, skipped, empty, forgotten, errors, agents_indexed, agents_skipped}
+    Returns counts: {indexed, skipped, empty, removed, forgotten, errors, agents_indexed, agents_skipped}
     """
-    indexed = skipped = errors = empty = forgotten = 0
+    indexed = skipped = errors = empty = removed = forgotten = 0
     agents_indexed = agents_skipped = 0
 
     session_files, agent_files = _discover_files(source)
@@ -49,6 +50,8 @@ def scan(conn: sqlite3.Connection, force: bool = False, source: str | None = Non
                 skipped += 1
             elif result == "skipped_empty":
                 empty += 1
+            elif result == "removed_empty":
+                removed += 1
             elif result == "skipped_forgotten":
                 forgotten += 1
         except Exception:
@@ -68,6 +71,7 @@ def scan(conn: sqlite3.Connection, force: bool = False, source: str | None = Non
         "indexed": indexed,
         "skipped": skipped,
         "empty": empty,
+        "removed": removed,
         "forgotten": forgotten,
         "errors": errors,
         "agents_indexed": agents_indexed,
@@ -96,11 +100,18 @@ def _discover_files(source: str | None) -> tuple[list[Path], list[Path]]:
 
 
 def needs_index(conn: sqlite3.Connection, path: Path) -> bool:
-    """True when the file changed after its session was last indexed, or was never indexed."""
+    """True when the file changed after its session was last indexed or last parsed as no conversation, or
+    was never looked at."""
+    mtime = _mtime(path)
     scanned_at = get_session_scanned_at(conn, path.stem)
-    if not scanned_at:
-        return True
-    return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat() > scanned_at
+    if scanned_at:
+        return mtime > scanned_at
+    empty_at = get_empty_mtime(conn, path.stem)
+    return empty_at is None or mtime > empty_at
+
+
+def _mtime(path: Path) -> str:
+    return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
 
 
 def _has_user_message(path: Path) -> bool:
@@ -156,14 +167,31 @@ def _process_session(conn: sqlite3.Connection, path: Path, force: bool) -> str:
 
     session = parse_session(path)
     if session is None:
-        return "skipped_empty"  # empty/stub/no-user-messages
+        return _not_a_conversation(conn, path)
     if is_forgotten(conn, session.session_id):
         return "skipped_forgotten"  # a copy of a forgotten transcript under another name
 
+    mark_empty(conn, path.stem, None)
     upsert_session(conn, session)
     _embed_session_chunks(conn, session.session_id)
     upsert_tool_events(conn, session.session_id, extract_tool_events(path))
     return "indexed"
+
+
+def _not_a_conversation(conn: sqlite3.Connection, path: Path) -> str:
+    """Remember a transcript that holds no conversation (no reply, only commands) at its mtime, and drop the
+    rows an older parser wrote for it. Not when it cannot be read or is blank: then the rows may be the only copy."""
+    try:
+        if not path.read_text(encoding="utf-8", errors="replace").strip():
+            return "skipped_empty"
+    except OSError:
+        return "skipped_empty"
+    had_rows = get_session_scanned_at(conn, path.stem) is not None
+    if had_rows:
+        delete_session_rows(conn, path.stem)
+    mark_empty(conn, path.stem, _mtime(path))
+    conn.commit()
+    return "removed_empty" if had_rows else "skipped_empty"
 
 
 def _embed_session_chunks(conn: sqlite3.Connection, session_id: str) -> None:

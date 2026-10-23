@@ -137,6 +137,28 @@ def get_session_scanned_at(conn: sqlite3.Connection, session_id: str) -> str | N
     return row["scanned_at"] if row else None
 
 
+def delete_session_rows(conn: sqlite3.Connection, session_id: str) -> None:
+    """Every indexed row of a session, uncommitted. The FTS tables follow their triggers; vec_chunks has none."""
+    conn.execute("DELETE FROM vec_chunks WHERE session_id = ?", (session_id,))
+    conn.execute("DELETE FROM session_chunks WHERE session_id = ?", (session_id,))
+    conn.execute("DELETE FROM tool_events WHERE session_id = ?", (session_id,))
+    conn.execute("DELETE FROM agent_sessions WHERE parent_session_id = ?", (session_id,))
+    conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+
+
+def get_empty_mtime(conn: sqlite3.Connection, session_id: str) -> str | None:
+    row = conn.execute("SELECT mtime FROM empty_transcripts WHERE session_id = ?", (session_id,)).fetchone()
+    return row["mtime"] if row else None
+
+
+def mark_empty(conn: sqlite3.Connection, session_id: str, mtime: str | None) -> None:
+    """Record that the transcript parsed as no conversation at `mtime`; None clears it. Uncommitted."""
+    if mtime is None:
+        conn.execute("DELETE FROM empty_transcripts WHERE session_id = ?", (session_id,))
+    else:
+        conn.execute("INSERT OR REPLACE INTO empty_transcripts (session_id, mtime) VALUES (?, ?)", (session_id, mtime))
+
+
 def is_forgotten(conn: sqlite3.Connection, session_id: str | None) -> bool:
     return conn.execute("SELECT 1 FROM forgotten_sessions WHERE session_id = ?", (session_id,)).fetchone() is not None
 

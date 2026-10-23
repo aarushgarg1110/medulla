@@ -434,6 +434,16 @@ def test_forget_command_without_a_match_exits_1(forget_projects):
     assert runner.invoke(app, ["forget", "noSuchSession"]).exit_code == 1
 
 
+def test_scan_command_counts_rows_removed_for_a_transcript_that_is_no_longer_a_conversation(claude_projects):
+    from medulla.db.database import connect
+    from medulla.episodic.store import upsert_session
+    from tests.test_store import make_session
+    path = claude_projects / "my-project" / "sess-junk.jsonl"
+    path.write_text(make_claude_jsonl([claude_user("hello", session_id="sess-junk")]))
+    upsert_session(connect(), make_session("sess-junk", turn_count=0))
+    assert "1 removed (no longer a conversation)" in runner.invoke(app, ["scan", "--force"]).output
+
+
 def test_forget_cli_and_mcp_give_the_same_report(forget_projects):
     from medulla.db.database import connect
     from medulla.episodic import scanner
