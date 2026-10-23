@@ -71,6 +71,16 @@ comes first because it indexes the history you already have, and because it cach
 dependencies (about 844 MB), so the plugin's first start takes seconds instead of outlasting Claude
 Code's server start. Your next Claude Code session has medulla.
 
+### Keep your history
+
+Claude Code deletes session transcripts older than 30 days by default. medulla keeps whatever it has
+already indexed, but it cannot index, refresh or rebuild a session whose transcript is gone. To keep
+everything, raise the limit in `~/.claude/settings.json`:
+
+```json
+{ "cleanupPeriodDays": 99999 }
+```
+
 ### Kiro, or Claude Code without the plugin
 
 The same CLI also runs as a plain MCP server. You get search and resume, without the skills or
