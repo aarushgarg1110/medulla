@@ -964,3 +964,34 @@ def test_stale_sessions_skip_stubs_and_unchanged_sessions(db, projects):
     s.index_session(db, projects / "test-session-id.jsonl")
     _write(projects / "sess-new.jsonl", "newOne")
     assert [p.stem for p in s.stale_sessions(db)] == ["sess-new"]
+
+
+# --- v0.2.1 planned (TDD step 2): stubs until implemented ------------------------------------------------
+
+_PLANNED = pytest.mark.skip(reason="planned for v0.2.1, not implemented yet")
+
+
+@_PLANNED
+def test_a_mere_mention_of_next_action_is_not_a_report():
+    """Seen 2026-10-23 in Part2's own handoff Step 0: a session that only DISCUSSED "immediate next action" came
+    back as "Handoff report (chunks 41-59)". A report needs an "Immediate next action" section heading AND a start
+    (a `# Handoff` title or "1. Overarching goal"); otherwise the no-report path (last chunks). r4 and the
+    fresh-index test above keep passing: their text still appears, as last chunks."""
+
+
+@_PLANNED
+def test_every_report_in_a_copy_of_the_real_index_still_resolves_to_the_same_start():
+    """Validation, not a unit test: run against a MEDULLA_DIR sandbox copy of the real index before the PR;
+    only the bogus reports may change."""
+
+
+@_PLANNED
+def test_resume_adds_a_chain_recap_after_a_gap_of_more_than_7_days():
+    """Recap mode: when the newest part ended >7 days before `now` (injected), resume adds "Chain recap": each
+    part oldest first with its date, its goal line and its Immediate next action (~300 chars) or "(no report)".
+    2 of the 24 real chains had such a gap (pkaAcasIntegrationPart3 14 d, 3dSBMLModelsPart4 11 d)."""
+
+
+@_PLANNED
+def test_no_chain_recap_within_7_days_or_for_a_single_session():
+    """Absent for a fresh chain and for a session with no parts."""

@@ -354,3 +354,9 @@ def test_search_with_no_results_still_says_the_index_is_behind(claude_projects):
     _titled_session(claude_projects, "sess-late3", "missedPart2", "the answer lives here", age_s=120)
     result = runner.invoke(app, ["search", "zzznomatch9999", "--bm25-only"])
     assert "No results" in result.output and "missedPart2" in result.output
+
+
+@pytest.mark.skip(reason="planned for v0.2.1, not implemented yet")
+def test_scan_prints_progress_lines_while_it_runs():
+    """Optional: scan(progress=cb) feeds `[k/N pct%] elapsed · ETA` lines to the CLI every ~10% or 30 s; the
+    final summary is unchanged. A full rescan of the real index took 4 min with no output on 2026-10-23."""
