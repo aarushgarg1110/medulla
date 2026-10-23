@@ -13,7 +13,7 @@ from medulla.episodic.parser import (
 )
 from medulla.episodic.store import (
     upsert_session, upsert_agent_session, upsert_tool_events,
-    get_session_scanned_at, get_agent_scanned_at,
+    get_session_scanned_at, get_agent_scanned_at, is_forgotten, forgotten_ids,
 )
 
 _USER_LINE = re.compile(r'"type":\s*"user"')
@@ -33,9 +33,9 @@ KIRO_SESSIONS_DIR = Path.home() / ".kiro" / "sessions"
 def scan(conn: sqlite3.Connection, force: bool = False, source: str | None = None) -> dict:
     """Scan session files and index new/changed ones.
 
-    Returns counts: {indexed, skipped, errors, agents_indexed, agents_skipped}
+    Returns counts: {indexed, skipped, empty, forgotten, errors, agents_indexed, agents_skipped}
     """
-    indexed = skipped = errors = empty = 0
+    indexed = skipped = errors = empty = forgotten = 0
     agents_indexed = agents_skipped = 0
 
     session_files, agent_files = _discover_files(source)
@@ -49,6 +49,8 @@ def scan(conn: sqlite3.Connection, force: bool = False, source: str | None = Non
                 skipped += 1
             elif result == "skipped_empty":
                 empty += 1
+            elif result == "skipped_forgotten":
+                forgotten += 1
         except Exception:
             errors += 1
 
@@ -66,6 +68,7 @@ def scan(conn: sqlite3.Connection, force: bool = False, source: str | None = Non
         "indexed": indexed,
         "skipped": skipped,
         "empty": empty,
+        "forgotten": forgotten,
         "errors": errors,
         "agents_indexed": agents_indexed,
         "agents_skipped": agents_skipped,
@@ -129,9 +132,10 @@ def stale_sessions(conn: sqlite3.Connection, settle_s: float = 60) -> list[Path]
     would otherwise read as stale forever."""
     files, _ = _discover_files("claude")
     cutoff = time.time() - settle_s
+    gone = forgotten_ids(conn)
     out = []
     for p in files:
-        if p.stat().st_mtime > cutoff or not needs_index(conn, p):
+        if p.stem in gone or p.stat().st_mtime > cutoff or not needs_index(conn, p):
             continue
         if get_session_scanned_at(conn, p.stem) or _has_user_message(p):
             out.append(p)
@@ -145,12 +149,16 @@ def index_session(conn: sqlite3.Connection, path: Path) -> str:
 
 
 def _process_session(conn: sqlite3.Connection, path: Path, force: bool) -> str:
+    if is_forgotten(conn, path.stem):
+        return "skipped_forgotten"
     if not force and not needs_index(conn, path):
         return "skipped_mtime"
 
     session = parse_session(path)
     if session is None:
         return "skipped_empty"  # empty/stub/no-user-messages
+    if is_forgotten(conn, session.session_id):
+        return "skipped_forgotten"  # a copy of a forgotten transcript under another name
 
     upsert_session(conn, session)
     _embed_session_chunks(conn, session.session_id)
@@ -187,7 +195,7 @@ def _process_agent(conn: sqlite3.Connection, path: Path, force: bool) -> str:
                 return "skipped_mtime"
 
     agent = parse_agent_session(path)
-    if agent is None:
+    if agent is None or is_forgotten(conn, agent.parent_session_id):
         return "skipped"
 
     upsert_agent_session(conn, agent)

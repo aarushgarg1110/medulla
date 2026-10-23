@@ -284,6 +284,7 @@ The CLI is for you; the MCP tools are what Claude calls. Most capabilities have 
 | Search sessions, wiki and commands | `medulla search "<query>" [--layer episodic\|semantic\|events] [--bm25-only] [-n N]` | `medulla_search` |
 | Read the top hits in full | `medulla search "<query>" --expand N` | `medulla_search` with `expand` |
 | Resume a session | `medulla resume <name>` | `medulla_resume` |
+| Forget a session: out of the index and every later scan; asks before deleting the transcript | `medulla forget <name> [--delete-transcript]`, `medulla forget --list`, `medulla forget --undo <name>` | `medulla_forget` (never deletes the transcript) |
 | Open the next part by hand | `medulla nextpart [--from <title>] [--dry-run]` | |
 | Recent sessions | `medulla list [--project <path>]` | `medulla_list` |
 | A session's chunks, agents and files | `medulla session-detail <id> [--chunk N]` | `medulla_session_detail` |

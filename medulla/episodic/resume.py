@@ -61,6 +61,19 @@ def _resolve(conn: sqlite3.Connection, name: str):
     return rows[0] if rows else None
 
 
+def not_found(conn: sqlite3.Connection, name: str) -> NotFound:
+    """The error for a name no indexed session matches: when it was forgotten, so; else the closest titles."""
+    gone = conn.execute("SELECT session_id, forgotten_at FROM forgotten_sessions WHERE lower(slug) = lower(?) "
+                        "OR session_id LIKE ? ORDER BY forgotten_at DESC", (name, name + "%")).fetchone()
+    if gone:
+        return NotFound(f"Session '{name}' was forgotten on {gone['forgotten_at'][:10]}; "
+                        f"`medulla forget --undo {gone['session_id'][:8]}` brings it back.")
+    titles = [r[0] for r in conn.execute("SELECT DISTINCT slug FROM sessions WHERE slug IS NOT NULL")]
+    close = difflib.get_close_matches(name, titles, n=5, cutoff=0.6)
+    return NotFound(f"Session '{name}' not found by title or id prefix."
+                    + (f" Closest titles: {', '.join(close)}" if close else ""))
+
+
 def _report_start(text: str, end: int) -> int | None:
     """Where the report whose "Immediate next action" section is at `end` begins: its last title before it,
     else its "1. Overarching goal". A heading with another such section after it belongs to earlier text,
@@ -83,10 +96,7 @@ def resume(conn: sqlite3.Connection, name: str, last: int = 2) -> str:
                 indexed.append(p.stem)
     s = _resolve(conn, name)
     if s is None:
-        titles = [r[0] for r in conn.execute("SELECT DISTINCT slug FROM sessions WHERE slug IS NOT NULL")]
-        close = difflib.get_close_matches(name, titles, n=5, cutoff=0.6)
-        raise NotFound(f"Session '{name}' not found by title or id prefix."
-                       + (f" Closest titles: {', '.join(close)}" if close else ""))
+        raise not_found(conn, name)
 
     sid, slug = s["session_id"], s["slug"] or s["session_id"]
     chunks = conn.execute("SELECT chunk_index, chunk_text FROM session_chunks WHERE session_id = ? "

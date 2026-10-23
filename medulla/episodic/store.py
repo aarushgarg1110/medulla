@@ -137,6 +137,14 @@ def get_session_scanned_at(conn: sqlite3.Connection, session_id: str) -> str | N
     return row["scanned_at"] if row else None
 
 
+def is_forgotten(conn: sqlite3.Connection, session_id: str | None) -> bool:
+    return conn.execute("SELECT 1 FROM forgotten_sessions WHERE session_id = ?", (session_id,)).fetchone() is not None
+
+
+def forgotten_ids(conn: sqlite3.Connection) -> set[str]:
+    return {r[0] for r in conn.execute("SELECT session_id FROM forgotten_sessions")}
+
+
 def get_agent_scanned_at(conn: sqlite3.Connection, agent_id: str) -> str | None:
     row = conn.execute(
         "SELECT scanned_at FROM agent_sessions WHERE agent_id = ?", (agent_id,)

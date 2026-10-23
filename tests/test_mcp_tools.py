@@ -966,6 +966,32 @@ def test_stale_sessions_skip_stubs_and_unchanged_sessions(db, projects):
     assert [p.stem for p in s.stale_sessions(db)] == ["sess-new"]
 
 
+def test_forget_never_deletes_the_transcript_and_names_the_command_that_does(db, projects, monkeypatch):
+    from medulla.mcp import _tool_forget
+    from tests.test_forget import write_session
+    monkeypatch.setattr("medulla.episodic.scanner._get_embedding_provider", lambda: _MockEmbedProvider())
+    path = write_session(projects, "sess-a", "alphaTask")
+    scanner_mod().scan(db)
+    out = _tool_forget(db, {"name": "alphaTask"})
+    assert out.startswith("Forgot alphaTask") and path.exists()
+    assert out.endswith("run in a terminal: medulla forget sess-a --delete-transcript")
+
+
+def test_forget_undo_and_errors(db, projects, monkeypatch):
+    from medulla.mcp import _tool_forget
+    from tests.test_forget import write_session
+    monkeypatch.setattr("medulla.episodic.scanner._get_embedding_provider", lambda: _MockEmbedProvider())
+    write_session(projects, "sess-a", "alphaTask")
+    gone = write_session(projects, "sess-b", "betaTask")
+    scanner_mod().scan(db)
+    gone.unlink()
+    assert "Transcript kept" not in _tool_forget(db, {"name": "betaTask"})
+    _tool_forget(db, {"name": "alphaTask"})
+    assert "the next scan indexes it again" in _tool_forget(db, {"name": "alphaTask", "undo": True})
+    assert _tool_forget(db, {"name": " "}) == "Error: name is required"
+    assert "not found" in _tool_forget(db, {"name": "noSuchSession"})
+
+
 # --- v0.2.1 planned (TDD step 2): stubs until implemented ------------------------------------------------
 
 _PLANNED = pytest.mark.skip(reason="planned for v0.2.1, not implemented yet")

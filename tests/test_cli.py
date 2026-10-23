@@ -358,6 +358,95 @@ def test_search_with_no_results_still_says_the_index_is_behind(claude_projects):
     assert "No results" in result.output and "missedPart2" in result.output
 
 
+# ── forget: the CLI asks before deleting a transcript; the MCP tool never deletes one ─────────────────
+
+@pytest.fixture
+def forget_projects(tmp_path, monkeypatch):
+    from tests.test_forget import write_session
+    proj = tmp_path / "claude_projects" / "-proj-a"
+    proj.mkdir(parents=True)
+    monkeypatch.setattr("medulla.episodic.scanner.CLAUDE_PROJECTS_DIR", proj.parent)
+    monkeypatch.setattr("medulla.episodic.scanner.KIRO_SESSIONS_DIR", tmp_path / "kiro_none")
+    write_session(proj, "sess-a", "alphaTask")
+    runner.invoke(app, ["scan"])
+    return proj
+
+
+def test_forget_command_asks_and_keeps_the_transcript_by_default(forget_projects, monkeypatch):
+    monkeypatch.setattr("medulla.cli._can_ask", lambda: True)
+    result = runner.invoke(app, ["forget", "alphaTask"], input="\n")
+    assert result.exit_code == 0 and "Forgot alphaTask" in result.output and "Also delete the transcript" in result.output
+    assert "Transcript kept." in result.output and (forget_projects / "sess-a.jsonl").exists()
+
+
+def test_forget_command_deletes_the_transcript_on_yes(forget_projects, monkeypatch):
+    monkeypatch.setattr("medulla.cli._can_ask", lambda: True)
+    result = runner.invoke(app, ["forget", "alphaTask"], input="y\n")
+    assert result.exit_code == 0 and "Deleted" in result.output
+    assert not (forget_projects / "sess-a.jsonl").exists() and not (forget_projects / "sess-a").exists()
+
+
+def test_forget_command_without_a_terminal_keeps_the_transcript_and_says_how(forget_projects):
+    """Claude's Bash tool, a pipe or cron: nobody to ask, so no prompt and no deletion."""
+    result = runner.invoke(app, ["forget", "alphaTask"])
+    assert result.exit_code == 0 and "Also delete" not in result.output
+    assert "Rerun with --delete-transcript" in result.output and (forget_projects / "sess-a.jsonl").exists()
+
+
+def test_forget_command_delete_transcript_skips_the_prompt(forget_projects, monkeypatch):
+    monkeypatch.setattr("medulla.cli._can_ask", lambda: True)
+    result = runner.invoke(app, ["forget", "alphaTask", "--delete-transcript"])   # no input: a prompt would abort
+    assert result.exit_code == 0 and "Also delete" not in result.output
+    assert not (forget_projects / "sess-a.jsonl").exists()
+
+
+def test_forget_command_deletes_later_what_was_kept(forget_projects):
+    """The MCP tool's reply names this command; the session is found on the forgotten list."""
+    runner.invoke(app, ["forget", "alphaTask"])
+    result = runner.invoke(app, ["forget", "sess-a", "--delete-transcript"])
+    assert result.exit_code == 0 and "already forgotten" in result.output and "Deleted" in result.output
+
+
+def test_forget_command_refuses_a_live_transcript(forget_projects):
+    import os
+    os.utime(forget_projects / "sess-a.jsonl", None)
+    result = runner.invoke(app, ["forget", "alphaTask", "--delete-transcript"])
+    assert result.exit_code == 1 and "last minute" in result.output
+
+
+def test_forget_command_list_undo_and_the_scan_count(forget_projects):
+    runner.invoke(app, ["forget", "alphaTask"])
+    assert "1 forgotten" in runner.invoke(app, ["scan"]).output
+    assert "alphaTask" in runner.invoke(app, ["forget", "--list"]).output
+    assert "the next scan indexes it again" in runner.invoke(app, ["forget", "--undo", "alphaTask"]).output
+    assert runner.invoke(app, ["forget", "--undo", "alphaTask"]).exit_code == 1
+
+
+def test_forget_command_with_no_transcript_on_disk_asks_nothing(forget_projects, monkeypatch):
+    monkeypatch.setattr("medulla.cli._can_ask", lambda: True)
+    (forget_projects / "sess-a.jsonl").unlink()
+    result = runner.invoke(app, ["forget", "alphaTask"])
+    assert result.exit_code == 0 and "Transcript: none on disk." in result.output and "Also delete" not in result.output
+
+
+def test_forget_command_without_a_match_exits_1(forget_projects):
+    assert runner.invoke(app, ["forget"]).exit_code == 1
+    assert runner.invoke(app, ["forget", "noSuchSession"]).exit_code == 1
+
+
+def test_forget_cli_and_mcp_give_the_same_report(forget_projects):
+    from medulla.db.database import connect
+    from medulla.episodic import scanner
+    from medulla.mcp import _tool_forget
+    cli = runner.invoke(app, ["forget", "alphaTask"]).output
+    runner.invoke(app, ["forget", "--undo", "alphaTask"])
+    conn = connect()
+    scanner.scan(conn)
+    mcp = _tool_forget(conn, {"name": "alphaTask"})
+    assert cli.startswith(mcp.split("\nTranscript kept")[0] + "\nTranscript kept")
+    assert mcp.endswith("run in a terminal: medulla forget sess-a --delete-transcript")
+
+
 @pytest.mark.skip(reason="planned for v0.2.1, not implemented yet")
 def test_scan_prints_progress_lines_while_it_runs():
     """Optional: scan(progress=cb) feeds `[k/N pct%] elapsed · ETA` lines to the CLI every ~10% or 30 s; the

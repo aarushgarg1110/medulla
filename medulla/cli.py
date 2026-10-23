@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 from typing import Annotated, Optional
 import typer
@@ -32,6 +33,7 @@ def scan(
         counts = do_scan(conn, force=force, source=source)
 
     empty_note = f", {counts['empty']} empty/stub" if counts.get('empty') else ""
+    empty_note += f", {counts['forgotten']} forgotten" if counts.get('forgotten') else ""
     console.print(f"[green]✓[/green] Sessions: {counts['indexed']} indexed, {counts['skipped']} unchanged{empty_note}, {counts['errors']} errors")
     console.print(f"[green]✓[/green] Agents:   {counts['agents_indexed']} indexed, {counts['agents_skipped']} unchanged")
 
@@ -107,6 +109,60 @@ def resume(
     except recall.NotFound as e:
         console.print(str(e), markup=False, highlight=False, soft_wrap=True)
         raise typer.Exit(1)
+
+
+@app.command()
+def forget(
+    name: Annotated[Optional[str], typer.Argument(help="The session's /rename title or a session-id prefix")] = None,
+    delete_transcript: Annotated[bool, typer.Option("--delete-transcript", help="Also delete its transcript from disk, without asking")] = False,
+    undo: Annotated[bool, typer.Option("--undo", help="Take it off the forgotten list, so the next scan indexes it again")] = False,
+    list_: Annotated[bool, typer.Option("--list", help="Show the forgotten sessions")] = False,
+):
+    """Remove a session from the index and keep it out of every scan, then offer to delete its transcript."""
+    from medulla.db.database import connect
+    from medulla.episodic import forget as forgetting
+    from medulla.episodic.resume import NotFound
+
+    conn = connect()
+    if list_:
+        _plain(forgetting.listing(conn))
+        return
+    if not name:
+        _plain("Name the session to forget (its title or an id prefix), or pass --list.")
+        raise typer.Exit(1)
+    try:
+        if undo:
+            _plain(forgetting.undo(conn, name))
+            return
+        target = forgetting.find(conn, name)
+    except (NotFound, forgetting.Ambiguous) as e:
+        _plain(str(e))
+        raise typer.Exit(1)
+
+    _plain(forgetting.forget(conn, target))
+    if not forgetting.transcript(target):
+        return
+    if not delete_transcript:
+        if not _can_ask():
+            _plain("Transcript kept: there is no terminal to ask. Rerun with --delete-transcript to delete it.")
+            return
+        if not typer.confirm("Also delete the transcript from disk? It cannot be recovered.", default=False):
+            _plain("Transcript kept.")
+            return
+    try:
+        _plain(forgetting.delete_transcript(conn, target))
+    except forgetting.LiveTranscript as e:
+        _plain(str(e))
+        raise typer.Exit(1)
+
+
+def _can_ask() -> bool:
+    """A prompt needs a person at a terminal; under Claude's Bash tool, a pipe or cron there is none."""
+    return sys.stdin.isatty()
+
+
+def _plain(text: str) -> None:
+    console.print(text, markup=False, highlight=False, soft_wrap=True)
 
 
 @app.command()
