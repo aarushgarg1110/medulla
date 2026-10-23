@@ -167,6 +167,11 @@ def forgotten_ids(conn: sqlite3.Connection) -> set[str]:
     return {r[0] for r in conn.execute("SELECT session_id FROM forgotten_sessions")}
 
 
+def get_session_title(conn: sqlite3.Connection, session_id: str) -> str | None:
+    row = conn.execute("SELECT slug FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    return row["slug"] if row else None
+
+
 def get_agent_scanned_at(conn: sqlite3.Connection, agent_id: str) -> str | None:
     row = conn.execute(
         "SELECT scanned_at FROM agent_sessions WHERE agent_id = ?", (agent_id,)

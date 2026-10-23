@@ -440,8 +440,10 @@ def test_scan_command_counts_rows_removed_for_a_transcript_that_is_no_longer_a_c
     from tests.test_store import make_session
     path = claude_projects / "my-project" / "sess-junk.jsonl"
     path.write_text(make_claude_jsonl([claude_user("hello", session_id="sess-junk")]))
+    (claude_projects / "my-project" / "sess-hello.jsonl").write_text(make_claude_jsonl([claude_user("hi")]))
     upsert_session(connect(), make_session("sess-junk", turn_count=0))
-    assert "1 removed (no longer a conversation)" in runner.invoke(app, ["scan", "--force"]).output
+    summary = runner.invoke(app, ["scan", "--force"]).output.splitlines()[-2]
+    assert summary == "✓ Sessions: 1 indexed, 0 unchanged, 1 empty/stub, 1 removed (no longer a conversation), 0 errors"
 
 
 def test_forget_cli_and_mcp_give_the_same_report(forget_projects):
@@ -457,7 +459,62 @@ def test_forget_cli_and_mcp_give_the_same_report(forget_projects):
     assert mcp.endswith("run in a terminal: medulla forget sess-a --delete-transcript")
 
 
-@pytest.mark.skip(reason="planned for v0.2.1, not implemented yet")
-def test_scan_prints_progress_lines_while_it_runs():
-    """Optional: scan(progress=cb) feeds `[k/N pct%] elapsed · ETA` lines to the CLI every ~10% or 30 s; the
-    final summary is unchanged. A full rescan of the real index took 4 min with no output on 2026-10-23."""
+def test_scan_prints_progress_lines_while_it_runs(claude_projects):
+    """Not a terminal (CliRunner, Claude's Bash tool, a pipe): a plain line every 10%, then the unchanged
+    summary. A full rescan of the real index took 4 min with no output on 2026-10-23."""
+    import re
+    for i in range(9):
+        _titled_session(claude_projects, f"sess-p{i}", f"progPart{i}", "work")
+    result = runner.invoke(app, ["scan"])
+    lines = [ln for ln in result.output.splitlines() if ln.startswith("[")]
+    pcts = [int(re.match(r"\[\d+/10 (\d+)%\] 0:00 elapsed · ETA 0:00$", ln).group(1)) for ln in lines]
+    assert 5 <= len(lines) <= 10 and pcts == sorted(pcts) and lines[-1].startswith("[10/10 100%]")
+    assert result.output.splitlines()[-2].startswith("✓ Sessions: 10 indexed")
+
+
+def test_plain_progress_also_prints_every_30_s_and_says_nothing_for_an_empty_scan(monkeypatch):
+    """The percent and the ETA follow bytes: in the 2026-10-23 proof, counting the 192 quick subagent files put
+    the bar at 51% with an ETA of 8:56 when 9 s were left."""
+    import medulla.cli as cli
+    from medulla.episodic.scanner import ScanProgress as P
+    printed, now = [], [0.0]
+    monkeypatch.setattr(cli, "_plain", printed.append)
+    p = cli._PlainProgress(clock=lambda: now[0])
+    p(P(0, 0, 0, 0, ""))
+    p(P(0, 1000, 0, 10_000, "first"))
+    now[0] = 31.0
+    p(P(5, 1000, 50, 10_000, "slow one"))
+    now[0] = 32.0
+    p(P(6, 1000, 60, 10_000, "next"))
+    assert printed == ["[5/1000 0%] 0:31 elapsed · ETA 102:49"]
+    big = cli._PlainProgress(clock=lambda: now[0])
+    now[0] = 42.0
+    big(P(1, 10, 9_000, 10_000, "the one big session"))
+    assert printed[-1] == "[1/10 90%] 0:10 elapsed · ETA 0:01"
+
+
+def test_scan_in_a_terminal_draws_two_rows_and_leaves_the_summary(claude_projects, monkeypatch):
+    """The display picked from the 2026-10-23 demos: spinner, bar, count, %, elapsed and ETA, then the session
+    being indexed on a second row. Transient, so only the summary stays on screen."""
+    from io import StringIO
+    from rich.console import Console
+    import medulla.cli as cli
+    screen = StringIO()
+    monkeypatch.setattr(cli, "console", Console(file=screen, force_terminal=True, width=100, color_system=None))
+    result = runner.invoke(app, ["scan"])
+    out = screen.getvalue()
+    assert result.exit_code == 0 and "Scanning" in out and "↳" in out and "ETA" in out and "✓ Sessions: 1 indexed" in out
+    assert "1/1" in out
+
+
+def test_the_terminal_bar_follows_bytes_and_counts_sessions(monkeypatch):
+    from io import StringIO
+    from rich.console import Console
+    import medulla.cli as cli
+    from medulla.episodic.scanner import ScanProgress as P
+    screen = StringIO()
+    monkeypatch.setattr(cli, "console", Console(file=screen, force_terminal=True, width=100, color_system=None))
+    with cli._scan_progress() as report:
+        report(P(1, 10, 9_000, 10_000, "the one big session"))
+    out = screen.getvalue()      # the last frame, drawn as the display closes
+    assert " 1/10 " in out and " 90% " in out and "the one big session" in out

@@ -3,11 +3,16 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated, Optional
 import typer
 from rich.console import Console
+from rich.progress import (BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn, TimeElapsedColumn,
+                           TimeRemainingColumn)
 from rich.table import Table
+from rich.text import Text
 
 app = typer.Typer(
     name="medulla",
@@ -28,15 +33,64 @@ def scan(
     from medulla.db.database import connect
     from medulla.episodic.scanner import scan as do_scan
 
-    with console.status("[bold green]Scanning sessions..."):
-        conn = connect()
-        counts = do_scan(conn, force=force, source=source)
+    conn = connect()
+    with _scan_progress() as progress:
+        counts = do_scan(conn, force=force, source=source, progress=progress)
 
     empty_note = f", {counts['empty']} empty/stub" if counts.get('empty') else ""
     empty_note += f", {counts['removed']} removed (no longer a conversation)" if counts.get('removed') else ""
     empty_note += f", {counts['forgotten']} forgotten" if counts.get('forgotten') else ""
-    console.print(f"[green]✓[/green] Sessions: {counts['indexed']} indexed, {counts['skipped']} unchanged{empty_note}, {counts['errors']} errors")
+    console.print(f"[green]✓[/green] Sessions: {counts['indexed']} indexed, {counts['skipped']} unchanged{empty_note}, {counts['errors']} errors",
+                  soft_wrap=True)
     console.print(f"[green]✓[/green] Agents:   {counts['agents_indexed']} indexed, {counts['agents_skipped']} unchanged")
+
+
+class _TwoRows(Progress):
+    """Spinner, bar, session count, %, elapsed and ETA, with the session being indexed on the row below."""
+
+    def get_renderables(self):
+        yield self.make_tasks_table(self.tasks)
+        for task in self.tasks:
+            yield Text(f"  ↳ {task.fields.get('name', '')}", style="dim", no_wrap=True, overflow="ellipsis")
+
+
+class _PlainProgress:
+    """`[k/N pct%] m:ss elapsed · ETA m:ss` every 10% (of the bytes) or 30 s, for Claude's Bash tool, a pipe or a log."""
+
+    def __init__(self, clock=time.monotonic):
+        self._clock = clock
+        self._start = self._last = clock()
+        self._next_pct = 10
+
+    def __call__(self, p) -> None:
+        if not p.bytes_done:
+            return
+        pct, now = p.bytes_done * 100 // p.bytes_total, self._clock()
+        if pct < self._next_pct and now - self._last < 30:
+            return
+        spent = now - self._start
+        eta = spent / p.bytes_done * (p.bytes_total - p.bytes_done)
+        _plain(f"[{p.done}/{p.total} {pct}%] {_mmss(spent)} elapsed · ETA {_mmss(eta)}")
+        self._next_pct, self._last = pct - pct % 10 + 10, now
+
+
+def _mmss(seconds: float) -> str:
+    return f"{int(seconds) // 60}:{int(seconds) % 60:02d}"
+
+
+@contextmanager
+def _scan_progress():
+    """The two-row display in a terminal, plain lines anywhere else; transient, so only the summary stays. The bar
+    and ETA follow transcript bytes at the speed of the whole scan, so one big session cannot stall them."""
+    if not console.is_terminal:
+        yield _PlainProgress()
+        return
+    with _TwoRows(SpinnerColumn("dots"), TextColumn("[bold]Scanning"), BarColumn(bar_width=28),
+                  TextColumn("{task.fields[count]}"), TaskProgressColumn(), TimeElapsedColumn(), TextColumn("ETA"),
+                  TimeRemainingColumn(), console=console, transient=True, speed_estimate_period=24 * 3600) as bar:
+        task = bar.add_task("scan", total=None, count="", name="")
+        yield lambda p: bar.update(task, completed=p.bytes_done, total=p.bytes_total, count=f"{p.done}/{p.total}",
+                                   name=p.label)
 
 
 # ── search ─────────────────────────────────────────────────────────────────────

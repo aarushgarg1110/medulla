@@ -304,3 +304,34 @@ def test_an_empty_transcript_that_gets_a_reply_is_indexed(db, junk_dir):
     path.write_text(path.read_text() + "\n" + json.dumps(claude_assistant(session_id="sess-hello")))
     assert scan(db)["indexed"] == 1
     assert _count(db, "empty_transcripts") == 0
+
+
+def test_scan_reports_how_far_it_is_and_which_session_it_is_on(db, tmp_path, monkeypatch):
+    """The CLI draws the progress; the scanner only reports it. Labels come from the index (one lookup per file),
+    never from reading a transcript: that would be 1.4 GB of reading on every scan of the real index."""
+    import dataclasses
+    monkeypatch.setattr("medulla.episodic.scanner.CLAUDE_PROJECTS_DIR", tmp_path)
+    monkeypatch.setattr("medulla.episodic.scanner.KIRO_SESSIONS_DIR", tmp_path / "kiro-missing")
+    _write_session(tmp_path, "sess-a", ["alpha"])
+    _write_session(tmp_path, "sess-b", ["beta"])
+    _write_agent_session(tmp_path, "sess-a", "x1")
+    scan(db)
+    upsert_session(db, dataclasses.replace(make_session("sess-a", messages=["alpha"]), slug="alphaTitle"))
+    _write_session(tmp_path, "sess-c", ["never indexed yet"])
+    calls = []
+    scan(db, progress=calls.append)
+    sizes = sum((tmp_path / "my-project" / f"sess-{x}.jsonl").stat().st_size for x in "abc")
+    assert [c.done for c in calls] == [0, 1, 2, 3] and {c.total for c in calls} == {3}     # sessions only
+    assert [c.bytes_done for c in calls] == sorted(c.bytes_done for c in calls) and calls[0].bytes_done == 0
+    assert calls[-1].bytes_done == calls[-1].bytes_total == sizes
+    assert {c.label for c in calls[:3]} == {"alphaTitle", "sess-b", "sess-c"} and calls[3].label == ""
+
+
+def test_a_transcript_gone_since_it_was_listed_counts_as_an_error_and_no_bytes(db, tmp_path, monkeypatch):
+    monkeypatch.setattr("medulla.episodic.scanner.CLAUDE_PROJECTS_DIR", tmp_path)
+    real = _write_session(tmp_path, "sess-a", ["alpha"])
+    gone = tmp_path / "my-project" / "sess-gone.jsonl"
+    monkeypatch.setattr("medulla.episodic.scanner._discover_files", lambda source: ([gone, real], []))
+    calls = []
+    r = scan(db, progress=calls.append)
+    assert (r["errors"], r["indexed"]) == (1, 1) and calls[-1].bytes_total == real.stat().st_size

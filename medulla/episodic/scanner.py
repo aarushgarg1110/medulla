@@ -7,6 +7,7 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable, NamedTuple
 
 from medulla.episodic.parser import (
     parse_session, parse_agent_session, is_subagent_file, extract_tool_events
@@ -14,7 +15,7 @@ from medulla.episodic.parser import (
 from medulla.episodic.store import (
     upsert_session, upsert_agent_session, upsert_tool_events,
     get_session_scanned_at, get_agent_scanned_at, is_forgotten, forgotten_ids,
-    delete_session_rows, get_empty_mtime, mark_empty,
+    delete_session_rows, get_empty_mtime, mark_empty, get_session_title,
 )
 
 _USER_LINE = re.compile(r'"type":\s*"user"')
@@ -31,8 +32,20 @@ CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 KIRO_SESSIONS_DIR = Path.home() / ".kiro" / "sessions"
 
 
-def scan(conn: sqlite3.Connection, force: bool = False, source: str | None = None) -> dict:
-    """Scan session files and index new/changed ones.
+class ScanProgress(NamedTuple):
+    """How far a scan is: sessions for the count, transcript bytes for the bar and the ETA, since a few big
+    sessions hold most of the work. The label is the session's title from the index."""
+    done: int
+    total: int
+    bytes_done: int
+    bytes_total: int
+    label: str
+
+
+def scan(conn: sqlite3.Connection, force: bool = False, source: str | None = None,
+         progress: Callable[[ScanProgress], None] | None = None) -> dict:
+    """Scan session files and index new/changed ones. `progress` gets a ScanProgress before each session and
+    once when they are done, for the CLI to draw; the subagents follow uncounted (192 took 1 s on 2026-10-23).
 
     Returns counts: {indexed, skipped, empty, removed, forgotten, errors, agents_indexed, agents_skipped}
     """
@@ -40,8 +53,12 @@ def scan(conn: sqlite3.Connection, force: bool = False, source: str | None = Non
     agents_indexed = agents_skipped = 0
 
     session_files, agent_files = _discover_files(source)
+    sizes = [_size(p) for p in session_files]
+    bytes_total, bytes_done, total = sum(sizes), 0, len(session_files)
+    report = progress or (lambda p: None)
 
-    for path in session_files:
+    for done, (path, size) in enumerate(zip(session_files, sizes)):
+        report(ScanProgress(done, total, bytes_done, bytes_total, _label(conn, path.stem)))
         try:
             result = _process_session(conn, path, force)
             if result == "indexed":
@@ -56,6 +73,8 @@ def scan(conn: sqlite3.Connection, force: bool = False, source: str | None = Non
                 forgotten += 1
         except Exception:
             errors += 1
+        bytes_done += size
+    report(ScanProgress(total, total, bytes_total, bytes_total, ""))
 
     for path in agent_files:
         try:
@@ -77,6 +96,17 @@ def scan(conn: sqlite3.Connection, force: bool = False, source: str | None = Non
         "agents_indexed": agents_indexed,
         "agents_skipped": agents_skipped,
     }
+
+
+def _size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:     # gone since it was listed: the scan counts it as an error and goes on
+        return 0
+
+
+def _label(conn: sqlite3.Connection, session_id: str) -> str:
+    return get_session_title(conn, session_id) or session_id
 
 
 def _discover_files(source: str | None) -> tuple[list[Path], list[Path]]:
