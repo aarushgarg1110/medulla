@@ -292,3 +292,65 @@ def test_search_command_excerpt_is_match_centered(claude_projects):
     result = runner.invoke(app, ["search", "logD", "--bm25-only"])
     assert result.exit_code == 0
     assert "logD" in result.output or "logd" in result.output.lower()
+
+
+# ── resume, search --expand / --refresh: the CLI gives what the MCP tools give ──
+
+def _titled_session(projects, sid, title, body, age_s=600):
+    import os
+    import time
+    path = projects / "my-project" / f"{sid}.jsonl"
+    path.write_text(make_claude_jsonl([{"type": "custom-title", "customTitle": title},
+                                       claude_user(f"please {body}", session_id=sid)]))
+    t = time.time() - age_s
+    os.utime(path, (t, t))
+    return path
+
+
+def test_resume_command_indexes_and_prints_the_handoff(claude_projects):
+    _titled_session(claude_projects, "sess-handoff", "fooPart2", "## Immediate next action\nship the PR")
+    result = runner.invoke(app, ["resume", "fooPart2"])
+    assert result.exit_code == 0
+    assert "ship the PR" in result.output and "indexed now" in result.output
+
+
+def test_resume_command_exits_1_for_an_unknown_name(claude_projects):
+    result = runner.invoke(app, ["resume", "noSuchSession"])
+    assert result.exit_code == 1 and "not found" in result.output
+
+
+def test_nextpart_command_prints_or_explains(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEDULLA_DIR", str(tmp_path / "m"))
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    result = runner.invoke(app, ["nextpart", "--from", "fooPart3", "--dry-run"])
+    assert result.exit_code == 0 and "claude -n fooPart4" in result.output
+    result = runner.invoke(app, ["nextpart"])
+    assert result.exit_code == 1 and "--from" in result.output
+
+
+def test_search_command_expand_prints_the_whole_chunk(claude_projects):
+    runner.invoke(app, ["scan"])
+    result = runner.invoke(app, ["search", "logD outliers", "--expand", "1", "--bm25-only"])
+    assert result.exit_code == 0 and "CompoundX" in result.output
+
+
+def test_search_command_warns_when_transcripts_changed_since_indexing(claude_projects):
+    runner.invoke(app, ["scan"])
+    _titled_session(claude_projects, "sess-late", "latePart3", "newterm notes", age_s=120)
+    result = runner.invoke(app, ["search", "logD", "--bm25-only"])
+    assert "changed since" in result.output and "latePart3" in result.output
+
+
+def test_search_command_refresh_indexes_before_searching(claude_projects):
+    runner.invoke(app, ["scan"])
+    _titled_session(claude_projects, "sess-late2", "laterPart1", "refreshterm notes", age_s=120)
+    result = runner.invoke(app, ["search", "refreshterm", "--refresh", "--bm25-only"])
+    assert result.exit_code == 0 and "No results" not in result.output
+
+
+def test_search_with_no_results_still_says_the_index_is_behind(claude_projects):
+    """No results plus a stale index is exactly how a just-ended session goes missing."""
+    runner.invoke(app, ["scan"])
+    _titled_session(claude_projects, "sess-late3", "missedPart2", "the answer lives here", age_s=120)
+    result = runner.invoke(app, ["search", "zzznomatch9999", "--bm25-only"])
+    assert "No results" in result.output and "missedPart2" in result.output

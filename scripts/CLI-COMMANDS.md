@@ -31,7 +31,6 @@ medulla scan --source kiro      # ⚠️  finds Kiro files but all empty/stub
 medulla search "query"                    # ✅ all layers (episodic + semantic)
 medulla search "query" --layer episodic   # ✅ session chunks only
 medulla search "query" --layer semantic   # ✅ wiki pages only
-medulla search "query" --layer code       # (Sprint 6 — codebase layer, not yet)
 medulla search "query" --limit 5          # ✅ verified manually, limit results
 ```
 
@@ -146,7 +145,7 @@ medulla mcp             # ✅ starts MCP stdio server (protocol verified manuall
 # MCP protocol version: 2024-11-05
 # Tools exposed: 12 (medulla_search, session_detail, session_tree,
 #   project_context, list, stats, events_search, wiki_search, wiki_page,
-#   ingest, ingest_url, list_raw, analyze)
+#   ingest, ingest_url, list_raw)
 ```
 
 ---
@@ -161,5 +160,4 @@ medulla mcp             # ✅ starts MCP stdio server (protocol verified manuall
 | `medulla wiki list --type` in sanity check | Next update |
 | `medulla mcp` protocol test in sanity check | Next update |
 | `medulla use anthropic` test (needs key) | When key available |
-| `--layer code` search (codebase layer) | Sprint 6 |
 | `--scope org` ingest (org sync) | Sprint 5 |

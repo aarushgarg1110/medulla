@@ -1,0 +1,13 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/autohandoff.sh\"", "timeout": 10 }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "Skill", "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/autohandoff.sh\"", "timeout": 10 }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/autohandoff.sh\"", "timeout": 60 }] }
+    ]
+  }
+}

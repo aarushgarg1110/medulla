@@ -1,7 +1,10 @@
 """Discover and scan Claude Code session files into the DB."""
 from __future__ import annotations
 
+import json
+import re
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,15 +16,15 @@ from medulla.episodic.store import (
     get_session_scanned_at, get_agent_scanned_at,
 )
 
+_USER_LINE = re.compile(r'"type":\s*"user"')
 
-_embedding_provider = None
 
 def _get_embedding_provider():
-    global _embedding_provider
-    if _embedding_provider is None:
-        from medulla.embeddings import get_embedding_provider
-        _embedding_provider = get_embedding_provider()
-    return _embedding_provider
+    """The process's one embedding model, shared with search. Query and chunk vectors must come from
+    the same model, and the MCP server pre-loads it at startup (~11 s), so indexing from the server
+    reuses that copy instead of loading a second one."""
+    from medulla.search import _get_search_embedding_provider
+    return _get_search_embedding_provider()
 
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 KIRO_SESSIONS_DIR = Path.home() / ".kiro" / "sessions"
@@ -89,15 +92,61 @@ def _discover_files(source: str | None) -> tuple[list[Path], list[Path]]:
     return session_files, agent_files
 
 
+def needs_index(conn: sqlite3.Connection, path: Path) -> bool:
+    """True when the file changed after its session was last indexed, or was never indexed."""
+    scanned_at = get_session_scanned_at(conn, path.stem)
+    if not scanned_at:
+        return True
+    return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat() > scanned_at
+
+
+def _has_user_message(path: Path) -> bool:
+    with open(path, errors="replace") as fh:
+        return any(_USER_LINE.search(line) for line in fh)
+
+
+def title_of(path: Path) -> str | None:
+    """The session's /rename title (last write wins), read without parsing the whole file."""
+    title = None
+    with open(path, errors="replace") as fh:
+        for line in fh:
+            if '"custom-title"' not in line:
+                continue
+            try:
+                node = json.loads(line)
+            except ValueError:
+                continue
+            if node.get("type") == "custom-title" and node.get("customTitle"):
+                title = node["customTitle"]
+    return title
+
+
+def stale_sessions(conn: sqlite3.Connection, settle_s: float = 60) -> list[Path]:
+    """Session files that changed since they were indexed, oldest change first.
+
+    A file modified in the last `settle_s` seconds is a live session, not a stale index, and is left
+    out. A never-indexed file counts only if it holds a user message: the parser skips stubs, so they
+    would otherwise read as stale forever."""
+    files, _ = _discover_files("claude")
+    cutoff = time.time() - settle_s
+    out = []
+    for p in files:
+        if p.stat().st_mtime > cutoff or not needs_index(conn, p):
+            continue
+        if get_session_scanned_at(conn, p.stem) or _has_user_message(p):
+            out.append(p)
+    return sorted(out, key=lambda p: p.stat().st_mtime)
+
+
+def index_session(conn: sqlite3.Connection, path: Path) -> str:
+    """Index one session file now, whatever its mtime: what a resume needs for a session that ended
+    after the last scan, without paying for a scan of every changed file."""
+    return _process_session(conn, path, force=True)
+
+
 def _process_session(conn: sqlite3.Connection, path: Path, force: bool) -> str:
-    if not force:
-        scanned_at = get_session_scanned_at(conn, path.stem)
-        if scanned_at:
-            file_mtime = datetime.fromtimestamp(
-                path.stat().st_mtime, tz=timezone.utc
-            ).isoformat()
-            if file_mtime <= scanned_at:
-                return "skipped_mtime"
+    if not force and not needs_index(conn, path):
+        return "skipped_mtime"
 
     session = parse_session(path)
     if session is None:

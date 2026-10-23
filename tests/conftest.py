@@ -31,6 +31,14 @@ def patch_search_provider(monkeypatch):
                         lambda: _MockSearchEmbedProvider())
 
 
+@pytest.fixture(autouse=True)
+def no_real_transcripts(monkeypatch, tmp_path_factory):
+    """Point the scanner at an empty projects dir, so no test reads ~/.claude/projects. Search now
+    checks the transcripts for staleness, which would otherwise make every search test depend on
+    whatever sessions happen to be on the machine."""
+    monkeypatch.setattr("medulla.episodic.scanner.CLAUDE_PROJECTS_DIR", tmp_path_factory.mktemp("no_projects"))
+
+
 @pytest.fixture
 def db(tmp_path):
     """In-memory-style SQLite DB (file in tmp_path so migrations work cleanly)."""

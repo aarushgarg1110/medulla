@@ -1,0 +1,54 @@
+{
+  "name": "medulla",
+  "displayName": "medulla",
+  "version": "0.2.0-rc2",
+  "description": "Episodic memory for coding agents: search every past Claude Code and Kiro session, and resume one in a single call.",
+  "author": {
+    "name": "Aarush Garg"
+  },
+  "repository": "https://github.com/aarushgarg1110/medulla",
+  "license": "MIT",
+  "keywords": [
+    "memory",
+    "sessions",
+    "search",
+    "handoff",
+    "mcp"
+  ],
+  "mcpServers": {
+    "medulla": {
+      "command": "uv",
+      "args": [
+        "--project",
+        "${CLAUDE_PLUGIN_ROOT}",
+        "run",
+        "--quiet",
+        "medulla",
+        "mcp"
+      ]
+    }
+  },
+  "userConfig": {
+    "autohandoff": {
+      "type": "boolean",
+      "title": "Autohandoff",
+      "default": false,
+      "description": "Near the end of the context window, write the handoff and open the next part on its own. Off by default."
+    },
+    "autohandoff_at": {
+      "type": "number",
+      "title": "Autohandoff threshold (% of the context window)",
+      "default": 93,
+      "min": 50,
+      "max": 99,
+      "description": "When autohandoff asks for the handoff."
+    },
+    "context_window": {
+      "type": "number",
+      "title": "Context window size (tokens)",
+      "default": 0,
+      "min": 0,
+      "description": "0 detects it: from medulla's statusline if set up, else a [1m] model in your settings means 1,000,000, else 200,000."
+    }
+  }
+}

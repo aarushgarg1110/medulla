@@ -1,8 +1,10 @@
 [project]
 name = "medulla"
-version = "0.1.0"
-description = "Three-layer memory for Claude Code and Kiro — episodic, semantic, codebase"
+version = "0.2.0rc2"
+description = "Dual-layer memory for Claude Code and Kiro: a searchable journal of every session, and a wiki that compounds"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = "==3.12.*"
 dependencies = [
     "anthropic>=0.103.1",

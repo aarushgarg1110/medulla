@@ -318,11 +318,11 @@ def _parse_claude(path: Path, slug: str, body: str) -> ParsedSession | None:
             ended_at = ts
 
         msg = node.get("message", {})
-        role = msg.get("role") or node.get("type", "")
+        role = _turn_role(node)
 
         if role in ("user", "human"):
             text = _extract_user_text(msg)
-            if text:
+            if text and not _is_skill_body(node, text):
                 if first_message is None:
                     first_message = text[:MAX_FIRST_MSG]
                 messages.append(text)
@@ -409,12 +409,12 @@ def _parse_agent_claude(path: Path, body: str) -> ParsedAgentSession | None:
             last_updated_at = ts
 
         msg = node.get("message", {})
-        role = msg.get("role") or node.get("type", "")
+        role = _turn_role(node)
         message_count += 1
 
         if role in ("user", "human"):
             text = _extract_user_text(msg)
-            if text:
+            if text and not _is_skill_body(node, text):
                 if first_message is None:
                     first_message = text[:MAX_FIRST_MSG]
                 messages.append(text)
@@ -572,6 +572,24 @@ _SANITIZE_RES = [
         r"\[Image: source:[^\]]*\]",
     )
 ]
+
+
+_TURN_TYPES = ("user", "assistant", "human")
+
+
+def _turn_role(node: dict) -> str:
+    """The role of an entry that is a conversation turn, else "". Other entry types can carry a message
+    too: api-request-blob (written since 2026-10) is a copy of the API request with role "user"."""
+    kind = node.get("type")
+    if kind and kind not in _TURN_TYPES:
+        return ""
+    return (node.get("message") or {}).get("role") or kind or ""
+
+
+def _is_skill_body(node: dict, text: str) -> bool:
+    """A skill's instructions, injected as a meta user message when it runs: the same text in every session
+    that uses the skill, and the handoff skill's reads like a handoff report."""
+    return bool(node.get("isMeta")) and text.startswith("Base directory for this skill:")
 
 
 def _sanitize_text(text: str) -> str:

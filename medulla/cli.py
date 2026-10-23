@@ -1,4 +1,4 @@
-"""Medulla CLI — three-layer memory for Claude Code and Kiro."""
+"""Medulla CLI — dual-layer memory for Claude Code and Kiro: the session journal and the wiki."""
 from __future__ import annotations
 
 import subprocess
@@ -10,7 +10,7 @@ from rich.table import Table
 
 app = typer.Typer(
     name="medulla",
-    help="Three-layer memory for Claude Code and Kiro.",
+    help="Dual-layer memory for Claude Code and Kiro.",
     no_args_is_help=True,
 )
 console = Console()
@@ -42,21 +42,37 @@ def scan(
 def search(
     query: Annotated[str, typer.Argument(help="Search query")],
     limit: Annotated[int, typer.Option("--limit", "-n")] = 10,
-    layer: Annotated[Optional[str], typer.Option("--layer", help="episodic | semantic | code | events")] = None,
+    layer: Annotated[Optional[str], typer.Option("--layer", help="episodic | semantic | events")] = None,
     bm25_only: Annotated[bool, typer.Option("--bm25-only", help="Force keyword-only search, skip vector reranking")] = False,
+    expand: Annotated[int, typer.Option("--expand", help="Print the full text of the top N session-chunk hits")] = 0,
+    refresh: Annotated[bool, typer.Option("--refresh", help="Index transcripts changed since the last scan first")] = False,
 ):
     """Search across all memory layers. Uses hybrid BM25+vector search when embeddings exist."""
     from medulla.db.database import connect
+    from medulla.episodic import resume as recall
+    from medulla.episodic import scanner
     from medulla.search import search as do_search
 
     conn = connect()
+    if refresh:
+        scanner.scan(conn)
     results = do_search(conn, query, limit=limit, layer=layer, bm25_only=bm25_only)
+    note = recall.stale_note(conn, hint="Run with --refresh to index first.")
 
     if not results:
         console.print("[yellow]No results found.[/yellow]")
+        if note:
+            console.print(note, markup=False, highlight=False, soft_wrap=True)
         raise typer.Exit()
 
     for r in results:
+        if expand and r.result_type == "chunk" and r.chunk_index is not None:
+            expand -= 1
+            date_str = r.date[:10] if r.date else ""
+            console.print(f"\n[bold cyan]{r.id[:8]}[/bold cyan]  [dim]{date_str}  chunk {r.chunk_index}[/dim]")
+            read_on = f"medulla session-detail {r.id[:8]} --chunk {r.chunk_index}"
+            console.print(recall.expanded(conn, r.id, r.chunk_index, read_on), markup=False, highlight=False, soft_wrap=True)
+            continue
         if r.result_type == "tool_event":
             sid = r.id.split("#")[0][:8]
             date_str = r.date[:10] if r.date else ""
@@ -73,6 +89,38 @@ def search(
             label = f"[bold cyan]{r.id[:8]}[/bold cyan]  [dim]{date_str}  {proj}[/dim]{chunk_hint}"
         console.print(f"\n{label}")
         console.print(f"  [italic]{r.excerpt}[/italic]")
+    if note:
+        console.print(note, markup=False, highlight=False, soft_wrap=True)
+
+
+@app.command()
+def resume(
+    name: Annotated[str, typer.Argument(help="The session's /rename title (e.g. fooPart3) or a session-id prefix")],
+    last: Annotated[int, typer.Option("--last", help="Chunks to print when the session has no handoff report")] = 2,
+):
+    """Pick a session back up: index it if it changed, then print its handoff report and its parts."""
+    from medulla.db.database import connect
+    from medulla.episodic import resume as recall
+
+    try:
+        console.print(recall.resume(connect(), name, last=last), markup=False, highlight=False, soft_wrap=True)
+    except recall.NotFound as e:
+        console.print(str(e), markup=False, highlight=False, soft_wrap=True)
+        raise typer.Exit(1)
+
+
+@app.command()
+def nextpart(
+    from_: Annotated[Optional[str], typer.Option("--from", help="Title of the session to continue (default: the session this runs in)")] = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Print the command instead of opening it")] = False,
+):
+    """Open the next part of a session beside it, running /medulla:pickoff on it."""
+    from medulla import autohandoff
+
+    ok, message = autohandoff.nextpart(from_, dry_run)
+    console.print(message, markup=False, highlight=False, soft_wrap=True)
+    if not ok:
+        raise typer.Exit(1)
 
 
 # ── eval ─────────────────────────────────────────────────────────────────────
@@ -654,6 +702,40 @@ def ingest(
 
 wiki_app = typer.Typer(help="Wiki management commands.")
 app.add_typer(wiki_app, name="wiki")
+
+statusline_app = typer.Typer(help="Claude Code statusline: context bar, and the window size autohandoff reads.")
+app.add_typer(statusline_app, name="statusline")
+
+
+@statusline_app.command(name="setup")
+def statusline_setup(
+    yes: Annotated[bool, typer.Option("--yes", help="Apply without asking")] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Only say what would change")] = False,
+    tap: Annotated[bool, typer.Option("--tap", help="Install only the launcher, and print the line for your own script")] = False,
+):
+    """Add medulla's statusline, or wrap yours so it keeps its output; settings.json is backed up first."""
+    from medulla import statusline_setup as sl
+
+    if tap:
+        sl.install_launcher()
+        console.print("Add this line where your statusline script has read its JSON into $input:\n"
+                      + sl.tap_line(), markup=False, highlight=False, soft_wrap=True)
+        return
+    p = sl.plan()
+    console.print(sl.describe(p), markup=False, highlight=False, soft_wrap=True)
+    if p["mode"] == "present" or dry_run:
+        return
+    if not yes and not typer.confirm("Apply?"):
+        raise typer.Exit(1)
+    console.print(f"Done. statusLine command: {sl.apply()['command']}", markup=False, highlight=False, soft_wrap=True)
+
+
+@statusline_app.command(name="undo")
+def statusline_undo():
+    """Remove medulla's statusline, or restore the one it wrapped."""
+    from medulla import statusline_setup as sl
+
+    console.print(sl.undo(), markup=False, highlight=False, soft_wrap=True)
 
 
 @wiki_app.command(name="list")

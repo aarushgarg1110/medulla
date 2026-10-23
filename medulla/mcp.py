@@ -1,6 +1,6 @@
 """Medulla MCP stdio server — Sprint 2.
 
-Exposes 11 tools across the episodic memory layer (semantic + codebase in later sprints).
+Exposes the episodic (session journal) and semantic (wiki) layers to Claude over stdio.
 Register with Claude Code:
     claude mcp add medulla uv -- --project /path/to/medulla run medulla mcp
 """
@@ -16,6 +16,8 @@ from mcp.server import Server, ServerRequestContext
 from mcp.server.stdio import stdio_server
 
 from medulla.db.database import connect
+from medulla.episodic import resume as recall
+from medulla.episodic import scanner
 from medulla.episodic.store import (
     get_project_context,
     get_session_detail,
@@ -39,10 +41,29 @@ _TOOLS = [
             "properties": {
                 "query": {"type": "string", "description": "Search terms"},
                 "limit": {"type": "integer", "default": 10},
-                "layer": {"type": "string", "enum": ["episodic", "semantic", "code", "events"], "description": "Restrict to a single layer (omit for all). 'events' = harvested tool/command history only."},
+                "layer": {"type": "string", "enum": ["episodic", "semantic", "events"], "description": "Restrict to a single layer (omit for all). 'events' = harvested tool/command history only."},
                 "bm25_only": {"type": "boolean", "default": False, "description": "Force keyword-only search, skip vector reranking"},
+                "expand": {"type": "integer", "default": 0, "description": "Return the full text of the top N session-chunk hits inline, instead of a pointer to medulla_session_detail. Use when the query is specific enough that the top hits are the answer."},
+                "refresh": {"type": "boolean", "default": False, "description": "Index transcripts changed since the last scan before searching (~10-25 s). The result footer says when this is needed."},
             },
             "required": ["query"],
+        },
+    ),
+    types.Tool(
+        name="medulla_resume",
+        description=(
+            "Pick up a previous session in one call: find it by /rename title (or session-id prefix), "
+            "index it first if it changed after the last scan, and return its handoff report (or its last "
+            "chunks when it has none) plus every part of the same objective (foo, fooPart2, fooPart3) by "
+            "date. Replaces `medulla scan` + medulla_list + medulla_session_detail at the start of a pickoff."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The session's /rename title, e.g. 'inferenceOptimizationPart6', or a session-id prefix"},
+                "last": {"type": "integer", "default": 2, "description": "Chunks to return from the end when the session has no handoff report"},
+            },
+            "required": ["name"],
         },
     ),
     types.Tool(
@@ -249,17 +270,6 @@ _TOOLS = [
         inputSchema={"type": "object", "properties": {}},
     ),
     types.Tool(
-        name="medulla_analyze",
-        description="Manifest quality analysis: retry rates, help-followup rates, error rates per tool manifest.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "since_days": {"type": "integer", "default": 30},
-                "top": {"type": "integer", "default": 20},
-            },
-        },
-    ),
-    types.Tool(
         name="medulla_remove",
         description=(
             "Remove a wiki page or raw file. "
@@ -321,6 +331,7 @@ _server.add_request_handler("tools/call", types.CallToolRequestParams, call_tool
 
 _HANDLERS: dict[str, Any] = {
     "medulla_search": lambda conn, args: _tool_search(conn, args),
+    "medulla_resume": lambda conn, args: _tool_resume(conn, args),
     "medulla_session_detail": lambda conn, args: _tool_session_detail(conn, args),
     "medulla_session_tree": lambda conn, args: _tool_session_tree(conn, args),
     "medulla_project_context": lambda conn, args: _tool_project_context(conn, args),
@@ -333,7 +344,6 @@ _HANDLERS: dict[str, Any] = {
     "medulla_ingest": lambda conn, args: _tool_ingest(conn, args),
     "medulla_ingest_url": lambda conn, args: _tool_ingest_url(conn, args),
     "medulla_list_raw": lambda conn, args: _tool_list_raw(conn, args),
-    "medulla_analyze": lambda conn, args: _tool_analyze(conn, args),
     "medulla_reindex_edges": lambda conn, args: _tool_reindex_edges(conn, args),
     "medulla_remove": lambda conn, args: _tool_remove(conn, args),
 }
@@ -364,19 +374,29 @@ def _tool_search(conn, args: dict) -> str:
     query = args.get("query", "").strip()
     if not query:
         return "Error: query is required"
+    if args.get("refresh"):
+        scanner.scan(conn)
     results = fts_search(
         conn, query,
         limit=args.get("limit", 10),
         layer=args.get("layer"),
         bm25_only=args.get("bm25_only", False),
     )
+    note = recall.stale_note(conn, hint="Pass refresh=true to index first.")
     if not results:
-        return f"No results found for: {query}"
+        return f"No results found for: {query}" + note
 
+    expand = args.get("expand", 0) or 0
     lines = [f"{len(results)} result(s) for \"{query}\":\n"]
     for r in results:
         date = (r.date or "")[:10]
         proj = (r.project_dir or "").split("/")[-1]
+        if expand and r.result_type == "chunk" and r.chunk_index is not None:
+            expand -= 1
+            read_on = f'medulla_session_detail(session_id="{r.id[:8]}", chunk_index={r.chunk_index})'
+            lines.append(f"[{r.id[:8]}]  {date}  chunk {r.chunk_index}  {proj}")
+            lines.append(recall.expanded(conn, r.id, r.chunk_index, read_on) + "\n")
+            continue
         if r.result_type == "tool_event":
             sid = r.id.split("#")[0][:8]     # id is "{session_id}#evt{rowid}"
             err = " ✗" if r.is_error else ""
@@ -387,7 +407,17 @@ def _tool_search(conn, args: dict) -> str:
         if r.chunk_index is not None:
             lines.append(f"  → medulla_session_detail(session_id=\"{r.id[:8]}\", chunk_index={r.chunk_index})")
         lines.append(f"  {r.excerpt}\n")
-    return "\n".join(lines)
+    return "\n".join(lines) + note
+
+
+def _tool_resume(conn, args: dict) -> str:
+    name = (args.get("name") or "").strip()
+    if not name:
+        return "Error: name is required"
+    try:
+        return recall.resume(conn, name, last=args.get("last", 2))
+    except recall.NotFound as e:
+        return str(e)
 
 
 def _tool_session_detail(conn, args: dict) -> str:
@@ -772,20 +802,6 @@ def _tool_list_raw(conn, args: dict) -> str:
     return "\n".join(lines)
 
 
-def _tool_analyze(conn, args: dict) -> str:
-    """Manifest quality — only meaningful once tool_events is populated."""
-    count = conn.execute("SELECT COUNT(*) FROM tool_events").fetchone()[0]
-    if count == 0:
-        return (
-            "No tool events indexed yet.\n"
-            "Wire up the PostToolUse hook to populate tool_events:\n"
-            '  Add to ~/.claude/settings.json hooks → PostToolUse:\n'
-            '  {"type": "command", "command": "medulla scan"}'
-        )
-    # Future: compute retry/help/error rates per manifest_key
-    return f"tool_events count: {count}. Full manifest quality analysis coming in Sprint 5."
-
-
 def _tool_remove(conn, args: dict) -> str:
     target = args.get("target", "").strip()
     if not target:
@@ -847,8 +863,19 @@ def serve() -> None:  # pragma: no cover
     anyio.run(_serve)
 
 
+def _refresh_statusline() -> None:
+    """A plugin update moves medulla's files; re-point the statusline launcher, if the user installed
+    one, at this copy. Never raises: the statusline must not keep the server from starting."""
+    try:
+        from medulla.statusline_setup import refresh_target
+        refresh_target()
+    except Exception:
+        pass
+
+
 async def _serve() -> None:  # pragma: no cover
     _prewarm_embeddings()
+    _refresh_statusline()
     async with stdio_server() as (read_stream, write_stream):
         await _server.run(
             read_stream,
