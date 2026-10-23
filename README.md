@@ -105,8 +105,8 @@ Use the plugin or `claude mcp add`, not both, or Claude Code runs two medulla se
 Pin a release tag in each command. Without a GitHub SSH key, set `CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1` first.
 
 ```bash
-uv tool install git+https://github.com/aarushgarg1110/medulla@v0.2.0
-claude plugin marketplace add aarushgarg1110/medulla#v0.2.0
+uv tool install git+https://github.com/aarushgarg1110/medulla@v0.2.1
+claude plugin marketplace add aarushgarg1110/medulla#v0.2.1
 claude plugin install medulla@medulla
 ```
 
