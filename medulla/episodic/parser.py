@@ -293,6 +293,7 @@ def _parse_claude(path: Path, slug: str, body: str) -> ParsedSession | None:
     first_message: str | None = None
     messages: list[str] = []   # interleaved user + assistant text
     has_user_message = False
+    has_reply = False
 
     for raw_line in body.splitlines():
         line = raw_line.strip()
@@ -330,6 +331,9 @@ def _parse_claude(path: Path, slug: str, body: str) -> ParsedSession | None:
 
         elif role == "assistant":
             turn_count += 1
+            # Claude Code writes a failed request (502, bad model name) as a "<synthetic>" reply
+            if msg.get("model") != "<synthetic>":
+                has_reply = True
             content = msg.get("content", [])
             if isinstance(content, list):
                 for item in content:
@@ -348,7 +352,7 @@ def _parse_claude(path: Path, slug: str, body: str) -> ParsedSession | None:
         if model is None and "model" in node:
             model = node["model"]
 
-    if not has_user_message:
+    if not has_user_message or not has_reply:
         return None
 
     return ParsedSession(

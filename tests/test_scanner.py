@@ -1,13 +1,15 @@
 """Tests for medulla.episodic.scanner — real files, real SQLite, no mocks."""
 import json
+import os
 import time
 from pathlib import Path
 
 import pytest
 
 from medulla.episodic.scanner import _discover_files, scan
-from medulla.episodic.store import get_session_scanned_at, list_sessions
+from medulla.episodic.store import get_session_scanned_at, list_sessions, upsert_session
 from tests.conftest import claude_assistant, claude_user, make_claude_jsonl
+from tests.test_store import make_session
 
 
 class _MockEmbedProvider:
@@ -27,7 +29,7 @@ def _write_session(root: Path, session_id: str, messages: list[str]) -> Path:
     """Write a minimal Claude session JSONL to root/<project>/<session_id>.jsonl."""
     proj = root / "my-project"
     proj.mkdir(exist_ok=True)
-    lines = [claude_user(m, session_id=session_id) for m in messages]
+    lines = [claude_user(m, session_id=session_id) for m in messages] + [claude_assistant(session_id=session_id)]
     path = proj / f"{session_id}.jsonl"
     path.write_text(make_claude_jsonl(lines))
     return path
@@ -234,3 +236,102 @@ def test_chunks_that_already_have_vectors_are_not_embedded_again(db, tmp_path, m
     scan(db)
     _embed_session_chunks(db, "sess-once")
     assert len(calls) == 1
+
+
+# ── a transcript that holds no conversation (v0.2.1) ───────────────────────────────────────────────
+
+@pytest.fixture
+def junk_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr("medulla.episodic.scanner.CLAUDE_PROJECTS_DIR", tmp_path)
+    monkeypatch.setattr("medulla.episodic.scanner.KIRO_SESSIONS_DIR", tmp_path / "kiro-missing")
+    (tmp_path / "my-project").mkdir()
+    return tmp_path / "my-project"
+
+
+def _junk(proj, sid, age_s=600):
+    """A prompt nobody answered: the parser drops it, and older parsers indexed it with 0 turns."""
+    path = proj / f"{sid}.jsonl"
+    path.write_text(make_claude_jsonl([claude_user("hello", session_id=sid)]))
+    t = time.time() - age_s
+    os.utime(path, (t, t))
+    return path
+
+
+def _count(db, table):
+    return db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+
+
+def test_a_transcript_that_now_parses_empty_loses_its_old_rows_on_rescan(db, junk_dir):
+    """21 of the 219 real transcripts parsed as empty but still had rows on 2026-10-23 (20 junk sessions and
+    ahtest2Part2): a re-parse that returned nothing left them in every list and search."""
+    _junk(junk_dir, "sess-old")
+    upsert_session(db, make_session("sess-old", turn_count=0, messages=["hello"]))
+    assert scan(db)["removed"] == 0            # unchanged since it was indexed, so not re-parsed
+    assert scan(db, force=True)["removed"] == 1
+    assert (_count(db, "sessions"), _count(db, "session_chunks")) == (0, 0)
+
+
+def test_a_blank_or_unreadable_transcript_keeps_its_rows(db, junk_dir):
+    """Then the rows may be the only copy left, which medulla exists to keep."""
+    path = _junk(junk_dir, "sess-old")
+    upsert_session(db, make_session("sess-old", turn_count=0, messages=["hello"]))
+    path.write_text("\n")
+    assert scan(db, force=True)["removed"] == 0
+    path.write_text(make_claude_jsonl([claude_user("hello", session_id="sess-old")]))
+    path.chmod(0)
+    try:
+        assert scan(db, force=True)["removed"] == 0
+    finally:
+        path.chmod(0o644)
+    assert _count(db, "sessions") == 1
+
+
+def test_an_unchanged_empty_transcript_is_not_parsed_again_or_reported_stale(db, junk_dir, monkeypatch):
+    """8 real transcripts that were never indexed were parsed on every scan, and the 4 holding a user entry
+    were named "changed since indexed" in every search footer (2026-10-23)."""
+    from medulla.episodic import scanner
+    _junk(junk_dir, "sess-hello")
+    assert [p.stem for p in scanner.stale_sessions(db)] == ["sess-hello"]
+    assert scan(db)["empty"] == 1
+    monkeypatch.setattr(scanner, "parse_session", lambda p: pytest.fail(f"parsed {p.name} again"))
+    assert scan(db)["empty"] == 0
+    assert scanner.stale_sessions(db) == []
+
+
+def test_an_empty_transcript_that_gets_a_reply_is_indexed(db, junk_dir):
+    path = _junk(junk_dir, "sess-hello")
+    scan(db)
+    path.write_text(path.read_text() + "\n" + json.dumps(claude_assistant(session_id="sess-hello")))
+    assert scan(db)["indexed"] == 1
+    assert _count(db, "empty_transcripts") == 0
+
+
+def test_scan_reports_how_far_it_is_and_which_session_it_is_on(db, tmp_path, monkeypatch):
+    """The CLI draws the progress; the scanner only reports it. Labels come from the index (one lookup per file),
+    never from reading a transcript: that would be 1.4 GB of reading on every scan of the real index."""
+    import dataclasses
+    monkeypatch.setattr("medulla.episodic.scanner.CLAUDE_PROJECTS_DIR", tmp_path)
+    monkeypatch.setattr("medulla.episodic.scanner.KIRO_SESSIONS_DIR", tmp_path / "kiro-missing")
+    _write_session(tmp_path, "sess-a", ["alpha"])
+    _write_session(tmp_path, "sess-b", ["beta"])
+    _write_agent_session(tmp_path, "sess-a", "x1")
+    scan(db)
+    upsert_session(db, dataclasses.replace(make_session("sess-a", messages=["alpha"]), slug="alphaTitle"))
+    _write_session(tmp_path, "sess-c", ["never indexed yet"])
+    calls = []
+    scan(db, progress=calls.append)
+    sizes = sum((tmp_path / "my-project" / f"sess-{x}.jsonl").stat().st_size for x in "abc")
+    assert [c.done for c in calls] == [0, 1, 2, 3] and {c.total for c in calls} == {3}     # sessions only
+    assert [c.bytes_done for c in calls] == sorted(c.bytes_done for c in calls) and calls[0].bytes_done == 0
+    assert calls[-1].bytes_done == calls[-1].bytes_total == sizes
+    assert {c.label for c in calls[:3]} == {"alphaTitle", "sess-b", "sess-c"} and calls[3].label == ""
+
+
+def test_a_transcript_gone_since_it_was_listed_counts_as_an_error_and_no_bytes(db, tmp_path, monkeypatch):
+    monkeypatch.setattr("medulla.episodic.scanner.CLAUDE_PROJECTS_DIR", tmp_path)
+    real = _write_session(tmp_path, "sess-a", ["alpha"])
+    gone = tmp_path / "my-project" / "sess-gone.jsonl"
+    monkeypatch.setattr("medulla.episodic.scanner._discover_files", lambda source: ([gone, real], []))
+    calls = []
+    r = scan(db, progress=calls.append)
+    assert (r["errors"], r["indexed"]) == (1, 1) and calls[-1].bytes_total == real.stat().st_size

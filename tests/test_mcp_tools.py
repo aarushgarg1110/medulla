@@ -874,9 +874,11 @@ def test_a_report_that_names_its_section_again_in_its_keywords_is_still_found_wh
     assert body.startswith("# Handoff — bazPart1") and "Base directory" not in body
 
 
-def test_a_report_that_only_mentions_its_next_action_is_still_returned(db):
+def test_a_mention_with_no_heading_and_no_start_is_shown_as_the_last_chunks(db):
+    """A mention is talk about a report, not one. Its text still shows, as the last chunks."""
     upsert_session(db, _titled("r4", "quxPart1", ["start qux", "Wrapping up: the immediate next action is to ship."]))
-    assert "the immediate next action is to ship" in _tool_resume(db, {"name": "quxPart1"})
+    out = _tool_resume(db, {"name": "quxPart1"})
+    assert "the immediate next action is to ship" in out and "No handoff report" in out
 
 
 def test_resume_without_a_handoff_returns_the_last_chunks(db):
@@ -964,3 +966,54 @@ def test_stale_sessions_skip_stubs_and_unchanged_sessions(db, projects):
     s.index_session(db, projects / "test-session-id.jsonl")
     _write(projects / "sess-new.jsonl", "newOne")
     assert [p.stem for p in s.stale_sessions(db)] == ["sess-new"]
+
+
+def test_forget_never_deletes_the_transcript_and_names_the_command_that_does(db, projects, monkeypatch):
+    from medulla.mcp import _tool_forget
+    from tests.test_forget import write_session
+    monkeypatch.setattr("medulla.episodic.scanner._get_embedding_provider", lambda: _MockEmbedProvider())
+    path = write_session(projects, "sess-a", "alphaTask")
+    scanner_mod().scan(db)
+    out = _tool_forget(db, {"name": "alphaTask"})
+    assert out.startswith("Forgot alphaTask") and path.exists()
+    assert out.endswith("run in a terminal: medulla forget sess-a --delete-transcript")
+
+
+def test_forget_undo_and_errors(db, projects, monkeypatch):
+    from medulla.mcp import _tool_forget
+    from tests.test_forget import write_session
+    monkeypatch.setattr("medulla.episodic.scanner._get_embedding_provider", lambda: _MockEmbedProvider())
+    write_session(projects, "sess-a", "alphaTask")
+    gone = write_session(projects, "sess-b", "betaTask")
+    scanner_mod().scan(db)
+    gone.unlink()
+    assert "Transcript kept" not in _tool_forget(db, {"name": "betaTask"})
+    _tool_forget(db, {"name": "alphaTask"})
+    assert "the next scan indexes it again" in _tool_forget(db, {"name": "alphaTask", "undo": True})
+    assert _tool_forget(db, {"name": " "}) == "Error: name is required"
+    assert "not found" in _tool_forget(db, {"name": "noSuchSession"})
+
+
+# --- a report needs a section heading or a start (v0.2.1) ------------------------------------------------
+
+def test_a_mere_mention_of_next_action_earlier_in_a_session_is_not_a_report(db):
+    """Seen 2026-10-23 in Part3's own handoff Step 0: a session that only discussed "immediate next action" came
+    back as "Handoff report (chunks 135-138)". Cut just before their handoffs, 6 of the 35 real-report sessions
+    in the index returned such a report; 1 finished session (autohandoff) still did."""
+    talk = "The hook keys on the report's Immediate next action section, so the skill says to keep that heading."
+    upsert_session(db, _titled("r5", "hookTalk", ["start", talk] + [f"turn {i} " + "x " * 120 for i in range(30)]))
+    out = _tool_resume(db, {"name": "hookTalk", "last": 1})
+    assert "No handoff report" in out and "Handoff report (" not in out and "turn 29" in out and talk not in out
+
+
+def test_a_report_with_only_a_heading_or_only_a_start_is_still_found(db):
+    """Formats of real reports in the index: inferenceOptimizationPart8 has the section heading and no title or
+    goal line; 3dSBMLModelsPart7 numbers its sections "## 1 ·", which the heading pattern misses, under a title."""
+    heading = "## 3. Open items\n- the CDK stack\n## 4. Immediate next action\n1. **Check** the slam logs"
+    upsert_session(db, _titled("r6", "infPart8", ["start", heading]))
+    assert "Handoff report (" in _tool_resume(db, {"name": "infPart8"})
+    titled = ("# Handoff — Potency v1\n## 1 · Overarching goal\nship it\n## 4 · Immediate next action\n"
+              "register the model")
+    upsert_session(db, _titled("r7", "sbmlPart7", ["start", titled]))
+    body = _tool_resume(db, {"name": "sbmlPart7"}).split("):\n", 1)[1]
+    assert body.startswith("# Handoff — Potency v1") and "register the model" in body

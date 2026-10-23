@@ -6,7 +6,7 @@ import pytest
 from typer.testing import CliRunner
 
 from medulla.cli import app
-from tests.conftest import claude_user, make_claude_jsonl
+from tests.conftest import claude_assistant, claude_user, make_claude_jsonl
 
 runner = CliRunner()
 
@@ -51,6 +51,7 @@ def claude_projects(tmp_path, monkeypatch):
     path.write_text(make_claude_jsonl([
         claude_user("tell me about logD outliers", session_id="session-abc-id"),
         claude_user("the CompoundX project had batch effects", session_id="session-abc-id"),
+        claude_assistant(session_id="session-abc-id"),
     ]))
     return projects
 
@@ -198,7 +199,7 @@ def chunked_session(tmp_path, monkeypatch):
     proj.mkdir()
     path = proj / "session-chunked.jsonl"
     messages = [claude_user(f"message number {i} about logD analysis", session_id="session-chunked-id")
-                for i in range(30)]
+                for i in range(30)] + [claude_assistant(session_id="session-chunked-id")]
     path.write_text(make_claude_jsonl(messages))
     return projects
 
@@ -244,7 +245,7 @@ def big_chunked_session(tmp_path, monkeypatch):
     proj.mkdir()
     path = proj / "session-big.jsonl"
     msgs = [claude_user(f"segment{i} " + "detailed analysis content sentence here " * 40,
-                        session_id="session-big-id") for i in range(16)]
+                        session_id="session-big-id") for i in range(16)] + [claude_assistant(session_id="session-big-id")]
     path.write_text(make_claude_jsonl(msgs))
     return projects
 
@@ -301,7 +302,8 @@ def _titled_session(projects, sid, title, body, age_s=600):
     import time
     path = projects / "my-project" / f"{sid}.jsonl"
     path.write_text(make_claude_jsonl([{"type": "custom-title", "customTitle": title},
-                                       claude_user(f"please {body}", session_id=sid)]))
+                                       claude_user(f"please {body}", session_id=sid),
+                                       claude_assistant(session_id=sid)]))
     t = time.time() - age_s
     os.utime(path, (t, t))
     return path
@@ -354,3 +356,165 @@ def test_search_with_no_results_still_says_the_index_is_behind(claude_projects):
     _titled_session(claude_projects, "sess-late3", "missedPart2", "the answer lives here", age_s=120)
     result = runner.invoke(app, ["search", "zzznomatch9999", "--bm25-only"])
     assert "No results" in result.output and "missedPart2" in result.output
+
+
+# ── forget: the CLI asks before deleting a transcript; the MCP tool never deletes one ─────────────────
+
+@pytest.fixture
+def forget_projects(tmp_path, monkeypatch):
+    from tests.test_forget import write_session
+    proj = tmp_path / "claude_projects" / "-proj-a"
+    proj.mkdir(parents=True)
+    monkeypatch.setattr("medulla.episodic.scanner.CLAUDE_PROJECTS_DIR", proj.parent)
+    monkeypatch.setattr("medulla.episodic.scanner.KIRO_SESSIONS_DIR", tmp_path / "kiro_none")
+    write_session(proj, "sess-a", "alphaTask")
+    runner.invoke(app, ["scan"])
+    return proj
+
+
+def test_forget_command_asks_and_keeps_the_transcript_by_default(forget_projects, monkeypatch):
+    monkeypatch.setattr("medulla.cli._can_ask", lambda: True)
+    result = runner.invoke(app, ["forget", "alphaTask"], input="\n")
+    assert result.exit_code == 0 and "Forgot alphaTask" in result.output and "Also delete the transcript" in result.output
+    assert "Transcript kept." in result.output and (forget_projects / "sess-a.jsonl").exists()
+
+
+def test_forget_command_deletes_the_transcript_on_yes(forget_projects, monkeypatch):
+    monkeypatch.setattr("medulla.cli._can_ask", lambda: True)
+    result = runner.invoke(app, ["forget", "alphaTask"], input="y\n")
+    assert result.exit_code == 0 and "Deleted" in result.output
+    assert not (forget_projects / "sess-a.jsonl").exists() and not (forget_projects / "sess-a").exists()
+
+
+def test_forget_command_without_a_terminal_keeps_the_transcript_and_says_how(forget_projects):
+    """Claude's Bash tool, a pipe or cron: nobody to ask, so no prompt and no deletion."""
+    result = runner.invoke(app, ["forget", "alphaTask"])
+    assert result.exit_code == 0 and "Also delete" not in result.output
+    assert "Rerun with --delete-transcript" in result.output and (forget_projects / "sess-a.jsonl").exists()
+
+
+def test_forget_command_delete_transcript_skips_the_prompt(forget_projects, monkeypatch):
+    monkeypatch.setattr("medulla.cli._can_ask", lambda: True)
+    result = runner.invoke(app, ["forget", "alphaTask", "--delete-transcript"])   # no input: a prompt would abort
+    assert result.exit_code == 0 and "Also delete" not in result.output
+    assert not (forget_projects / "sess-a.jsonl").exists()
+
+
+def test_forget_command_deletes_later_what_was_kept(forget_projects):
+    """The MCP tool's reply names this command; the session is found on the forgotten list."""
+    runner.invoke(app, ["forget", "alphaTask"])
+    result = runner.invoke(app, ["forget", "sess-a", "--delete-transcript"])
+    assert result.exit_code == 0 and "already forgotten" in result.output and "Deleted" in result.output
+
+
+def test_forget_command_refuses_a_live_transcript(forget_projects):
+    import os
+    os.utime(forget_projects / "sess-a.jsonl", None)
+    result = runner.invoke(app, ["forget", "alphaTask", "--delete-transcript"])
+    assert result.exit_code == 1 and "last minute" in result.output
+
+
+def test_forget_command_list_undo_and_the_scan_count(forget_projects):
+    runner.invoke(app, ["forget", "alphaTask"])
+    assert "1 forgotten" in runner.invoke(app, ["scan"]).output
+    assert "alphaTask" in runner.invoke(app, ["forget", "--list"]).output
+    assert "the next scan indexes it again" in runner.invoke(app, ["forget", "--undo", "alphaTask"]).output
+    assert runner.invoke(app, ["forget", "--undo", "alphaTask"]).exit_code == 1
+
+
+def test_forget_command_with_no_transcript_on_disk_asks_nothing(forget_projects, monkeypatch):
+    monkeypatch.setattr("medulla.cli._can_ask", lambda: True)
+    (forget_projects / "sess-a.jsonl").unlink()
+    result = runner.invoke(app, ["forget", "alphaTask"])
+    assert result.exit_code == 0 and "Transcript: none on disk." in result.output and "Also delete" not in result.output
+
+
+def test_forget_command_without_a_match_exits_1(forget_projects):
+    assert runner.invoke(app, ["forget"]).exit_code == 1
+    assert runner.invoke(app, ["forget", "noSuchSession"]).exit_code == 1
+
+
+def test_scan_command_counts_rows_removed_for_a_transcript_that_is_no_longer_a_conversation(claude_projects):
+    from medulla.db.database import connect
+    from medulla.episodic.store import upsert_session
+    from tests.test_store import make_session
+    path = claude_projects / "my-project" / "sess-junk.jsonl"
+    path.write_text(make_claude_jsonl([claude_user("hello", session_id="sess-junk")]))
+    (claude_projects / "my-project" / "sess-hello.jsonl").write_text(make_claude_jsonl([claude_user("hi")]))
+    upsert_session(connect(), make_session("sess-junk", turn_count=0))
+    summary = runner.invoke(app, ["scan", "--force"]).output.splitlines()[-2]
+    assert summary == "✓ Sessions: 1 indexed, 0 unchanged, 1 empty/stub, 1 removed (no longer a conversation), 0 errors"
+
+
+def test_forget_cli_and_mcp_give_the_same_report(forget_projects):
+    from medulla.db.database import connect
+    from medulla.episodic import scanner
+    from medulla.mcp import _tool_forget
+    cli = runner.invoke(app, ["forget", "alphaTask"]).output
+    runner.invoke(app, ["forget", "--undo", "alphaTask"])
+    conn = connect()
+    scanner.scan(conn)
+    mcp = _tool_forget(conn, {"name": "alphaTask"})
+    assert cli.startswith(mcp.split("\nTranscript kept")[0] + "\nTranscript kept")
+    assert mcp.endswith("run in a terminal: medulla forget sess-a --delete-transcript")
+
+
+def test_scan_prints_progress_lines_while_it_runs(claude_projects):
+    """Not a terminal (CliRunner, Claude's Bash tool, a pipe): a plain line every 10%, then the unchanged
+    summary. A full rescan of the real index took 4 min with no output on 2026-10-23."""
+    import re
+    for i in range(9):
+        _titled_session(claude_projects, f"sess-p{i}", f"progPart{i}", "work")
+    result = runner.invoke(app, ["scan"])
+    lines = [ln for ln in result.output.splitlines() if ln.startswith("[")]
+    pcts = [int(re.match(r"\[\d+/10 (\d+)%\] 0:00 elapsed · ETA 0:00$", ln).group(1)) for ln in lines]
+    assert 5 <= len(lines) <= 10 and pcts == sorted(pcts) and lines[-1].startswith("[10/10 100%]")
+    assert result.output.splitlines()[-2].startswith("✓ Sessions: 10 indexed")
+
+
+def test_plain_progress_also_prints_every_30_s_and_says_nothing_for_an_empty_scan(monkeypatch):
+    """The percent and the ETA follow bytes: in the 2026-10-23 proof, counting the 192 quick subagent files put
+    the bar at 51% with an ETA of 8:56 when 9 s were left."""
+    import medulla.cli as cli
+    from medulla.episodic.scanner import ScanProgress as P
+    printed, now = [], [0.0]
+    monkeypatch.setattr(cli, "_plain", printed.append)
+    p = cli._PlainProgress(clock=lambda: now[0])
+    p(P(0, 0, 0, 0, ""))
+    p(P(0, 1000, 0, 10_000, "first"))
+    now[0] = 31.0
+    p(P(5, 1000, 50, 10_000, "slow one"))
+    now[0] = 32.0
+    p(P(6, 1000, 60, 10_000, "next"))
+    assert printed == ["[5/1000 0%] 0:31 elapsed · ETA 102:49"]
+    big = cli._PlainProgress(clock=lambda: now[0])
+    now[0] = 42.0
+    big(P(1, 10, 9_000, 10_000, "the one big session"))
+    assert printed[-1] == "[1/10 90%] 0:10 elapsed · ETA 0:01"
+
+
+def test_scan_in_a_terminal_draws_two_rows_and_leaves_the_summary(claude_projects, monkeypatch):
+    """The display picked from the 2026-10-23 demos: spinner, bar, count, %, elapsed and ETA, then the session
+    being indexed on a second row. Transient, so only the summary stays on screen."""
+    from io import StringIO
+    from rich.console import Console
+    import medulla.cli as cli
+    screen = StringIO()
+    monkeypatch.setattr(cli, "console", Console(file=screen, force_terminal=True, width=100, color_system=None))
+    result = runner.invoke(app, ["scan"])
+    out = screen.getvalue()
+    assert result.exit_code == 0 and "Scanning" in out and "↳" in out and "ETA" in out and "✓ Sessions: 1 indexed" in out
+    assert "1/1" in out
+
+
+def test_the_terminal_bar_follows_bytes_and_counts_sessions(monkeypatch):
+    from io import StringIO
+    from rich.console import Console
+    import medulla.cli as cli
+    from medulla.episodic.scanner import ScanProgress as P
+    screen = StringIO()
+    monkeypatch.setattr(cli, "console", Console(file=screen, force_terminal=True, width=100, color_system=None))
+    with cli._scan_progress() as report:
+        report(P(1, 10, 9_000, 10_000, "the one big session"))
+    out = screen.getvalue()      # the last frame, drawn as the display closes
+    assert " 1/10 " in out and " 90% " in out and "the one big session" in out

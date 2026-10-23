@@ -16,6 +16,7 @@ from mcp.server import Server, ServerRequestContext
 from mcp.server.stdio import stdio_server
 
 from medulla.db.database import connect
+from medulla.episodic import forget as forgetting
 from medulla.episodic import resume as recall
 from medulla.episodic import scanner
 from medulla.episodic.store import (
@@ -62,6 +63,23 @@ _TOOLS = [
             "properties": {
                 "name": {"type": "string", "description": "The session's /rename title, e.g. 'inferenceOptimizationPart6', or a session-id prefix"},
                 "last": {"type": "integer", "default": 2, "description": "Chunks to return from the end when the session has no handoff report"},
+            },
+            "required": ["name"],
+        },
+    ),
+    types.Tool(
+        name="medulla_forget",
+        description=(
+            "Remove a session from the index and keep it out of every later scan (it goes on a forgotten list), "
+            "found by /rename title or session-id prefix. A title several sessions share forgets nothing and lists "
+            "them. Never deletes the transcript; the reply names the terminal command that does. undo=true takes "
+            "a session off the forgotten list."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The session's /rename title or a session-id prefix"},
+                "undo": {"type": "boolean", "default": False, "description": "Take it off the forgotten list instead, so the next scan indexes it again"},
             },
             "required": ["name"],
         },
@@ -332,6 +350,7 @@ _server.add_request_handler("tools/call", types.CallToolRequestParams, call_tool
 _HANDLERS: dict[str, Any] = {
     "medulla_search": lambda conn, args: _tool_search(conn, args),
     "medulla_resume": lambda conn, args: _tool_resume(conn, args),
+    "medulla_forget": lambda conn, args: _tool_forget(conn, args),
     "medulla_session_detail": lambda conn, args: _tool_session_detail(conn, args),
     "medulla_session_tree": lambda conn, args: _tool_session_tree(conn, args),
     "medulla_project_context": lambda conn, args: _tool_project_context(conn, args),
@@ -418,6 +437,23 @@ def _tool_resume(conn, args: dict) -> str:
         return recall.resume(conn, name, last=args.get("last", 2))
     except recall.NotFound as e:
         return str(e)
+
+
+def _tool_forget(conn, args: dict) -> str:
+    name = (args.get("name") or "").strip()
+    if not name:
+        return "Error: name is required"
+    try:
+        if args.get("undo"):
+            return forgetting.undo(conn, name)
+        target = forgetting.find(conn, name)
+    except (recall.NotFound, forgetting.Ambiguous) as e:
+        return str(e)
+    report = forgetting.forget(conn, target)
+    if forgetting.transcript(target):
+        report += ("\nTranscript kept: medulla_forget never deletes one. To delete it too, run in a terminal: "
+                   f"medulla forget {target.session_id[:8]} --delete-transcript")
+    return report
 
 
 def _tool_session_detail(conn, args: dict) -> str:
