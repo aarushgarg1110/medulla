@@ -1,7 +1,7 @@
 {
   "name": "medulla",
   "displayName": "medulla",
-  "version": "0.2.0-rc2",
+  "version": "0.2.0",
   "description": "Episodic memory for coding agents: search every past Claude Code and Kiro session, and resume one in a single call.",
   "author": {
     "name": "Aarush Garg"

@@ -1,6 +1,6 @@
 [project]
 name = "medulla"
-version = "0.2.0rc2"
+version = "0.2.0"
 description = "Dual-layer memory for Claude Code and Kiro: a searchable journal of every session, and a wiki that compounds"
 readme = "README.md"
 license = "MIT"
