@@ -29,7 +29,7 @@ def test_only_user_and_assistant_entries_are_turns(tmp_path):
     """Claude Code also writes api-request-blob entries (since 2026-10): a copy of the API request whose
     message has role "user". Read as a turn, it indexed the user side of each session twice."""
     path = tmp_path / "s.jsonl"
-    path.write_text(make_claude_jsonl([claude_user("why is the sky blue"), BLOB]))
+    path.write_text(make_claude_jsonl([claude_assistant(), claude_user("why is the sky blue"), BLOB]))
     assert parse_session(path).messages == ["why is the sky blue"]
 
 
@@ -50,7 +50,7 @@ def test_skill_instructions_are_not_indexed_but_other_meta_messages_are(tmp_path
     session that uses it, and the handoff skill's reads like a handoff report. A subagent's report is
     meta too, and is real content."""
     path = tmp_path / "s.jsonl"
-    path.write_text(make_claude_jsonl([claude_user("/medulla:handoff"), SKILL, AGENT]))
+    path.write_text(make_claude_jsonl([claude_user("/medulla:handoff"), SKILL, AGENT]) + "\n" + json.dumps(claude_assistant()))
     text = parse_session(path).all_user_text
     assert "Base directory" not in text and "the docs say /config works" in text and "/medulla:handoff" in text
     sub = tmp_path / "proj" / "sess" / "subagents" / "agent-b.jsonl"
@@ -106,14 +106,14 @@ def test_parse_basic_session(tmp_path):
 def test_parse_session_uses_stem_as_fallback_id(tmp_path):
     content = json.dumps({"type": "user", "message": {"role": "user", "content": "hi"}})
     path = tmp_path / "fallback-id.jsonl"
-    path.write_text(content)
+    path.write_text(content + "\n" + json.dumps({"type": "assistant", "message": {"role": "assistant", "content": []}}))
     result = parse_session(path)
     assert result is not None
     assert result.session_id == "fallback-id"
 
 
 def test_parse_session_slug_uses_custom_title(tmp_path):
-    content = make_claude_jsonl([
+    content = make_claude_jsonl([claude_assistant(), 
         claude_user("hi"),
         {"type": "custom-title", "customTitle": "cacoAblationPart1", "sessionId": "test-session-id"},
     ])
@@ -125,7 +125,7 @@ def test_parse_session_slug_uses_custom_title(tmp_path):
 
 
 def test_parse_session_slug_last_rename_wins(tmp_path):
-    content = make_claude_jsonl([
+    content = make_claude_jsonl([claude_assistant(), 
         claude_user("hi"),
         {"type": "custom-title", "customTitle": "cacoAblationPart1", "sessionId": "test-session-id"},
         claude_user("more"),
@@ -139,7 +139,7 @@ def test_parse_session_slug_last_rename_wins(tmp_path):
 
 
 def test_parse_session_slug_falls_back_to_stem_when_never_renamed(tmp_path):
-    content = make_claude_jsonl([claude_user("hi")])
+    content = make_claude_jsonl([claude_assistant(), claude_user("hi")])
     path = tmp_path / "unnamed-session.jsonl"
     path.write_text(content)
     result = parse_session(path)
@@ -149,7 +149,7 @@ def test_parse_session_slug_falls_back_to_stem_when_never_renamed(tmp_path):
 
 def test_parse_session_first_message_capped(tmp_path):
     long_msg = "x" * (MAX_FIRST_MSG + 100)
-    content = make_claude_jsonl([claude_user(long_msg)])
+    content = make_claude_jsonl([claude_assistant(), claude_user(long_msg)])
     path = tmp_path / "sess.jsonl"
     path.write_text(content)
     result = parse_session(path)
@@ -162,7 +162,7 @@ def test_parse_session_all_user_text_has_no_cap(tmp_path):
     messages = [claude_user("A" * 200, ts=f"2026-01-01T{i:02d}:00:00Z") for i in range(50)]
     content = make_claude_jsonl(messages)
     path = tmp_path / "big.jsonl"
-    path.write_text(content)
+    path.write_text(content + "\n" + json.dumps(claude_assistant()))
     result = parse_session(path)
     assert result is not None
     assert len(result.all_user_text) > 8000, "all_user_text must not be capped at 8KB"
@@ -208,6 +208,7 @@ def test_parse_session_multiple_tools(tmp_path):
 def test_parse_session_timestamps(tmp_path):
     content = make_claude_jsonl([
         claude_user("first", ts="2026-01-01T09:00:00Z"),
+        claude_assistant(),
         claude_user("last", ts="2026-01-01T11:00:00Z"),
     ])
     path = tmp_path / "sess.jsonl"
@@ -251,7 +252,7 @@ def test_parse_session_returns_none_for_unreadable_file(tmp_path):
 def test_parse_session_skips_bad_json_lines(tmp_path):
     content = "not json\n" + json.dumps(claude_user("valid message")) + "\nmore bad json{"
     path = tmp_path / "mixed.jsonl"
-    path.write_text(content)
+    path.write_text(content + "\n" + json.dumps(claude_assistant()))
     result = parse_session(path)
     assert result is not None
     assert result.first_message == "valid message"
@@ -266,7 +267,7 @@ def test_parse_session_human_role_alias(tmp_path):
         "message": {"role": "human", "content": "hello from human"},
     })
     path = tmp_path / "human.jsonl"
-    path.write_text(line)
+    path.write_text(line + "\n" + json.dumps(claude_assistant()))
     result = parse_session(path)
     assert result is not None
     assert result.first_message == "hello from human"
@@ -331,7 +332,7 @@ def test_parse_session_content_as_list(tmp_path):
         },
     })
     path = tmp_path / "list_content.jsonl"
-    path.write_text(line)
+    path.write_text(line + "\n" + json.dumps(claude_assistant()))
     result = parse_session(path)
     assert result is not None
     assert "block one" in result.all_user_text
@@ -589,3 +590,44 @@ def test_extract_paths_ignores_short_paths():
     acc: set[str] = set()
     _extract_paths("/ab", acc)
     assert len(acc) == 0
+
+
+# ── a session with no reply is not a conversation (v0.2.1) ──────────────────────────────────────
+
+CLEAR = {"type": "user", "sessionId": "test-session-id", "timestamp": "2026-10-23T10:00:00Z",
+         "message": {"role": "user", "content": "<command-name>/clear</command-name>\n<command-message>clear</command-message>"}}
+SYNTHETIC = {"type": "assistant", "sessionId": "test-session-id", "timestamp": "2026-10-23T10:01:00Z",
+             "message": {"role": "assistant", "model": "<synthetic>",
+                         "content": [{"type": "text", "text": "API Error: 502 Bad Gateway."}]}}
+
+
+def test_a_session_with_no_reply_is_not_indexed(tmp_path):
+    """A prompt nobody answered ("hello", /mcp output echoed as text) was indexed with 0 turns: 4 sessions in
+    the real index on 2026-10-23. A bare /clear was already dropped, since its command tags are stripped."""
+    path = tmp_path / "s.jsonl"
+    path.write_text(make_claude_jsonl([CLEAR]))
+    assert parse_session(path) is None
+    path.write_text(make_claude_jsonl([claude_user("hello")]))
+    assert parse_session(path) is None
+
+
+def test_an_error_claude_code_wrote_is_not_a_reply(tmp_path):
+    """A failed request (a 502, a bad model name, "No response requested.") is written as an assistant entry
+    whose model is <synthetic>: 4 sessions in the real index on 2026-10-23 had nothing else."""
+    path = tmp_path / "s.jsonl"
+    path.write_text(make_claude_jsonl([claude_user("hello"), SYNTHETIC, SYNTHETIC]))
+    assert parse_session(path) is None
+
+
+def test_a_retry_that_got_a_reply_after_an_error_is_indexed(tmp_path):
+    path = tmp_path / "s.jsonl"
+    path.write_text(make_claude_jsonl([claude_user("hello"), SYNTHETIC, claude_user("hello"), claude_assistant()]))
+    s = parse_session(path)
+    assert s is not None and s.turn_count == 2
+
+
+def test_one_real_exchange_after_a_clear_is_still_indexed(tmp_path):
+    path = tmp_path / "s.jsonl"
+    path.write_text(make_claude_jsonl([CLEAR, claude_user("why is the sky blue"), claude_assistant()]))
+    s = parse_session(path)
+    assert s is not None and s.turn_count == 1 and "why is the sky blue" in s.messages

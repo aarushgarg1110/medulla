@@ -6,7 +6,7 @@ import pytest
 from typer.testing import CliRunner
 
 from medulla.cli import app
-from tests.conftest import claude_user, make_claude_jsonl
+from tests.conftest import claude_assistant, claude_user, make_claude_jsonl
 
 runner = CliRunner()
 
@@ -51,6 +51,7 @@ def claude_projects(tmp_path, monkeypatch):
     path.write_text(make_claude_jsonl([
         claude_user("tell me about logD outliers", session_id="session-abc-id"),
         claude_user("the CompoundX project had batch effects", session_id="session-abc-id"),
+        claude_assistant(session_id="session-abc-id"),
     ]))
     return projects
 
@@ -198,7 +199,7 @@ def chunked_session(tmp_path, monkeypatch):
     proj.mkdir()
     path = proj / "session-chunked.jsonl"
     messages = [claude_user(f"message number {i} about logD analysis", session_id="session-chunked-id")
-                for i in range(30)]
+                for i in range(30)] + [claude_assistant(session_id="session-chunked-id")]
     path.write_text(make_claude_jsonl(messages))
     return projects
 
@@ -244,7 +245,7 @@ def big_chunked_session(tmp_path, monkeypatch):
     proj.mkdir()
     path = proj / "session-big.jsonl"
     msgs = [claude_user(f"segment{i} " + "detailed analysis content sentence here " * 40,
-                        session_id="session-big-id") for i in range(16)]
+                        session_id="session-big-id") for i in range(16)] + [claude_assistant(session_id="session-big-id")]
     path.write_text(make_claude_jsonl(msgs))
     return projects
 
@@ -301,7 +302,8 @@ def _titled_session(projects, sid, title, body, age_s=600):
     import time
     path = projects / "my-project" / f"{sid}.jsonl"
     path.write_text(make_claude_jsonl([{"type": "custom-title", "customTitle": title},
-                                       claude_user(f"please {body}", session_id=sid)]))
+                                       claude_user(f"please {body}", session_id=sid),
+                                       claude_assistant(session_id=sid)]))
     t = time.time() - age_s
     os.utime(path, (t, t))
     return path

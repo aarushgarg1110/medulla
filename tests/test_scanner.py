@@ -27,7 +27,7 @@ def _write_session(root: Path, session_id: str, messages: list[str]) -> Path:
     """Write a minimal Claude session JSONL to root/<project>/<session_id>.jsonl."""
     proj = root / "my-project"
     proj.mkdir(exist_ok=True)
-    lines = [claude_user(m, session_id=session_id) for m in messages]
+    lines = [claude_user(m, session_id=session_id) for m in messages] + [claude_assistant(session_id=session_id)]
     path = proj / f"{session_id}.jsonl"
     path.write_text(make_claude_jsonl(lines))
     return path

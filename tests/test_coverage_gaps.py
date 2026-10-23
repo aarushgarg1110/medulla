@@ -9,7 +9,7 @@ from medulla.episodic.parser import parse_session, parse_agent_session, _extract
 from medulla.episodic.scanner import scan, _discover_files
 from medulla.episodic.store import get_stats, upsert_session
 from medulla.search import search, _search_sessions
-from tests.conftest import claude_user, make_claude_jsonl
+from tests.conftest import claude_assistant, claude_user, make_claude_jsonl
 from tests.test_store import make_session
 
 
@@ -40,7 +40,7 @@ def test_parse_session_string_content_in_list_item(tmp_path):
         "message": {"role": "user", "content": ["bare string item", {"type": "text", "text": "dict item"}]},
     })
     path = tmp_path / "s-str.jsonl"
-    path.write_text(line)
+    path.write_text(line + "\n" + json.dumps(claude_assistant()))
     result = parse_session(path)
     assert result is not None
     assert "bare string item" in result.all_user_text
@@ -91,7 +91,7 @@ def test_scan_handles_parse_error_gracefully(db, tmp_path, monkeypatch):
     proj = tmp_path / "proj"
     proj.mkdir()
     path = proj / "bad-sess.jsonl"
-    path.write_text(make_claude_jsonl([claude_user("hello", session_id="bad-sess")]))
+    path.write_text(make_claude_jsonl([claude_assistant(), claude_user("hello", session_id="bad-sess")]))
 
     original_upsert = upsert_session
 
