@@ -92,11 +92,31 @@ Use the plugin or `claude mcp add`, not both, or Claude Code runs two medulla se
 
 ### A pre-release
 
-Pin the tag in both commands. Without a GitHub SSH key, set `CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1` first.
+Pin the tag in each command. Without a GitHub SSH key, set `CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1` first.
 
 ```bash
 uv tool install git+https://github.com/aarushgarg1110/medulla@v0.2.0-rc2
 claude plugin marketplace add aarushgarg1110/medulla#v0.2.0-rc2
+claude plugin install medulla@medulla
+```
+
+### Upgrading
+
+A pinned install stays on its tag. To move it to a newer one, change `ref` under
+`extraKnownMarketplaces.medulla` in `~/.claude/settings.json` to the new tag, then re-add the
+marketplace from it and update:
+
+```bash
+claude plugin marketplace add aarushgarg1110/medulla#<new tag>
+claude plugin update medulla@medulla
+uv tool install --force git+https://github.com/aarushgarg1110/medulla@<new tag>
+```
+
+After upgrading from a version before 0.2.0-rc2, rebuild the index once. Earlier versions also indexed
+Claude Code's copies of each API request and the text of every skill that ran:
+
+```bash
+medulla scan --force
 ```
 
 ## Quickstart
