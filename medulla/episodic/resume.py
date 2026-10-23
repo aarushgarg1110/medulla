@@ -115,18 +115,22 @@ def resume(conn: sqlite3.Connection, name: str, last: int = 2) -> str:
             mark = "▸" if r["session_id"] == sid else " "
             lines.append(f"  {mark} {r['slug']:<34} {(r['started_at'] or '')[:10]}  {r['turn_count']:>4} turns  {r['session_id'][:8]}")
 
+    report = None
     hits = [i for i, c in enumerate(chunks) if _REPORT.search(c["chunk_text"])]
     if hits:
         lo = max(0, hits[-1] - 2)
         texts = [c["chunk_text"] for c in chunks[lo:]]
         text = "\n".join(texts)
         ends = list(itertools.accumulate(len(t) + 1 for t in texts))      # each chunk's end offset in text
-        end = (list(_SECTION.finditer(text)) or list(_REPORT.finditer(text)))[-1].start()
+        sections = list(_SECTION.finditer(text))
+        end = (sections or list(_REPORT.finditer(text)))[-1].start()
         start = _report_start(text, end)
-        if start is None:
-            start = ends[hits[-1] - lo - 1] if hits[-1] > lo else 0         # the last matching chunk, whole
-        k = lo + sum(e <= start for e in ends)
-        lines += ["", f"Handoff report (chunks {k}–{len(chunks) - 1}):", text[start:][:4 * EXPAND_CHARS]]
+        if start is not None or sections:                                 # else talk about a report, not one
+            if start is None:
+                start = ends[hits[-1] - lo - 1] if hits[-1] > lo else 0     # the last matching chunk, whole
+            report = (lo + sum(e <= start for e in ends), text[start:])
+    if report:
+        lines += ["", f"Handoff report (chunks {report[0]}–{len(chunks) - 1}):", report[1][:4 * EXPAND_CHARS]]
     else:
         n = max(1, last or 2)
         lines += ["", f"No handoff report in this session — its last {min(n, len(chunks))} chunk(s):"]

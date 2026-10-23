@@ -874,9 +874,11 @@ def test_a_report_that_names_its_section_again_in_its_keywords_is_still_found_wh
     assert body.startswith("# Handoff — bazPart1") and "Base directory" not in body
 
 
-def test_a_report_that_only_mentions_its_next_action_is_still_returned(db):
+def test_a_mention_with_no_heading_and_no_start_is_shown_as_the_last_chunks(db):
+    """A mention is talk about a report, not one. Its text still shows, as the last chunks."""
     upsert_session(db, _titled("r4", "quxPart1", ["start qux", "Wrapping up: the immediate next action is to ship."]))
-    assert "the immediate next action is to ship" in _tool_resume(db, {"name": "quxPart1"})
+    out = _tool_resume(db, {"name": "quxPart1"})
+    assert "the immediate next action is to ship" in out and "No handoff report" in out
 
 
 def test_resume_without_a_handoff_returns_the_last_chunks(db):
@@ -992,20 +994,26 @@ def test_forget_undo_and_errors(db, projects, monkeypatch):
     assert "not found" in _tool_forget(db, {"name": "noSuchSession"})
 
 
-# --- v0.2.1 planned (TDD step 2): stubs until implemented ------------------------------------------------
+# --- a report needs a section heading or a start (v0.2.1) ------------------------------------------------
 
-_PLANNED = pytest.mark.skip(reason="planned for v0.2.1, not implemented yet")
+def test_a_mere_mention_of_next_action_earlier_in_a_session_is_not_a_report(db):
+    """Seen 2026-10-23 in Part3's own handoff Step 0: a session that only discussed "immediate next action" came
+    back as "Handoff report (chunks 135-138)". Cut just before their handoffs, 6 of the 35 real-report sessions
+    in the index returned such a report; 1 finished session (autohandoff) still did."""
+    talk = "The hook keys on the report's Immediate next action section, so the skill says to keep that heading."
+    upsert_session(db, _titled("r5", "hookTalk", ["start", talk] + [f"turn {i} " + "x " * 120 for i in range(30)]))
+    out = _tool_resume(db, {"name": "hookTalk", "last": 1})
+    assert "No handoff report" in out and "Handoff report (" not in out and "turn 29" in out and talk not in out
 
 
-@_PLANNED
-def test_a_mere_mention_of_next_action_is_not_a_report():
-    """Seen 2026-10-23 in Part2's own handoff Step 0: a session that only DISCUSSED "immediate next action" came
-    back as "Handoff report (chunks 41-59)". A report needs an "Immediate next action" section heading AND a start
-    (a `# Handoff` title or "1. Overarching goal"); otherwise the no-report path (last chunks). r4 and the
-    fresh-index test above keep passing: their text still appears, as last chunks."""
-
-
-@_PLANNED
-def test_every_report_in_a_copy_of_the_real_index_still_resolves_to_the_same_start():
-    """Validation, not a unit test: run against a MEDULLA_DIR sandbox copy of the real index before the PR;
-    only the bogus reports may change."""
+def test_a_report_with_only_a_heading_or_only_a_start_is_still_found(db):
+    """Formats of real reports in the index: inferenceOptimizationPart8 has the section heading and no title or
+    goal line; 3dSBMLModelsPart7 numbers its sections "## 1 ·", which the heading pattern misses, under a title."""
+    heading = "## 3. Open items\n- the CDK stack\n## 4. Immediate next action\n1. **Check** the slam logs"
+    upsert_session(db, _titled("r6", "infPart8", ["start", heading]))
+    assert "Handoff report (" in _tool_resume(db, {"name": "infPart8"})
+    titled = ("# Handoff — Potency v1\n## 1 · Overarching goal\nship it\n## 4 · Immediate next action\n"
+              "register the model")
+    upsert_session(db, _titled("r7", "sbmlPart7", ["start", titled]))
+    body = _tool_resume(db, {"name": "sbmlPart7"}).split("):\n", 1)[1]
+    assert body.startswith("# Handoff — Potency v1") and "register the model" in body
