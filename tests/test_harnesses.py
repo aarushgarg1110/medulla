@@ -25,6 +25,7 @@ def test_registry_lists_claude_and_gemini_and_rejects_unknown(isolated):
     assert harnesses.get("gemini").settings_path() == isolated / "agy" / "settings.json"
     assert harnesses.get("claude").default_threshold_pct == 93.0
     assert harnesses.get("gemini").default_threshold_pct == 45.0
+    assert "/rename introToNeonPart2" in harnesses.get("gemini").launch_line("introToNeon", "introToNeonPart2")
     with pytest.raises(ValueError, match="unknown harness"):
         harnesses.get("nonexistent")
 

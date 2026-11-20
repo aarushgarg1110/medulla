@@ -167,9 +167,9 @@ def _same_dir(a: str, b: str) -> bool:
 
 def find_pane(panes: list[dict], title: str, cwd: str | None = None,
               fallback_title: str | None = None) -> dict:
-    """The one pane showing `title` (or `fallback_title` / `fallback_title <args>` when none match
-    `title`, e.g. Ghostty panes running `agy` or `agy -c`); a tie is broken by working directory,
-    never guessed."""
+    """The one pane showing `title` (or, when `fallback_title` is set for harnesses that may not set
+    the terminal title like `agy`, `fallback_title` / `fallback_title <args>`, then a unique `cwd`
+    match, then the lone Ghostty pane); a tie is broken by working directory, never guessed."""
     hits = [p for p in panes if _GLYPH.sub("", p["title"]).strip() == title]
     if not hits and fallback_title:
         hits = [p for p in panes
@@ -177,6 +177,11 @@ def find_pane(panes: list[dict], title: str, cwd: str | None = None,
                 or c.startswith(fallback_title + " ")]
     if len(hits) > 1 and cwd:
         hits = [p for p in hits if _same_dir(p["cwd"], cwd)] or hits
+    if not hits and fallback_title:
+        if cwd:
+            hits = [p for p in panes if _same_dir(p["cwd"], cwd)]
+        if not hits and len(panes) == 1:
+            hits = list(panes)
     if len(hits) != 1:
         raise LookupError(f"{len(hits)} Ghostty panes are titled {title!r}")
     return hits[0]

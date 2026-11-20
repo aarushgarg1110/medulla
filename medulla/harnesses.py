@@ -153,7 +153,7 @@ def _gemini_settings() -> Path:
 
 
 def _gemini_launch(prev: str, nxt: str) -> str:
-    pickoff = f"/pickoff {prev} {_PICKOFF_NOTE}"
+    pickoff = f"/pickoff {prev} {_PICKOFF_NOTE} (suggest `/rename {nxt}`)"
     return f"agy -i {shlex.quote(pickoff)}"
 
 
