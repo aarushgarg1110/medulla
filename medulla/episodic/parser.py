@@ -9,14 +9,17 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import unquote
 
 from medulla.episodic.scrub import scrub_secrets
 
 
 MAX_FIRST_MSG = 500
 SUBAGENT_PATH_RE = re.compile(r"/subagents/agent-[^/]+\.jsonl$")
+GEMINI_TRANSCRIPT_RE = re.compile(r"/brain/([^/]+)/\.system_generated/logs/transcript\.jsonl$")
 
 
 @dataclass
@@ -74,6 +77,53 @@ def is_subagent_file(path: Path) -> bool:
     return bool(SUBAGENT_PATH_RE.search(str(path)))
 
 
+def is_gemini_transcript(path: Path) -> bool:
+    return bool(GEMINI_TRANSCRIPT_RE.search(str(path)))
+
+
+def gemini_session_id(path: Path) -> str:
+    m = GEMINI_TRANSCRIPT_RE.search(str(path))
+    return m.group(1) if m else path.stem
+
+
+def gemini_summary_meta(path: Path, sid: str) -> dict:
+    """Read title, project_dir, parent_conversation_id and nesting_depth from Antigravity's
+    `conversation_summaries.db` (read-only). Fails open to {} when absent or unreadable."""
+    if not is_gemini_transcript(path):
+        return {}
+    db = path.parents[4] / "conversation_summaries.db"
+    try:
+        if not db.exists():
+            return {}
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                "SELECT title, workspace_uris, parent_conversation_id, nesting_depth "
+                "FROM conversation_summaries WHERE conversation_id = ?",
+                (sid,),
+            ).fetchone()
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError):
+        return {}
+    if not row:
+        return {}
+    title, uris_raw, parent_id, depth = row
+    project_dir = None
+    try:
+        uris = json.loads(uris_raw) if uris_raw else []
+        if isinstance(uris, list) and uris and isinstance(uris[0], str):
+            project_dir = unquote(uris[0].removeprefix("file://"))
+    except ValueError:
+        pass
+    return {
+        "title": title or None,
+        "project_dir": project_dir,
+        "parent_conversation_id": parent_id or None,
+        "nesting_depth": int(depth or 0),
+    }
+
+
 # ── tool-event extraction (backfill of command history) ─────────────────────────
 
 _TRIVIAL_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*$")
@@ -83,10 +133,10 @@ def _derive_command(name: str, inp: object) -> str:
     """Best-effort human-meaningful command string for any tool."""
     if not isinstance(inp, dict):
         return f"{name} {str(inp)[:200]}".strip()
-    cmd = inp.get("command")
+    cmd = inp.get("command") or inp.get("CommandLine")
     if isinstance(cmd, str) and cmd.strip():
         return cmd
-    for k in ("file_path", "path", "pattern", "query", "url", "notebook_path"):
+    for k in ("file_path", "Path", "path", "pattern", "query", "url", "notebook_path"):
         v = inp.get(k)
         if isinstance(v, str) and v.strip():
             return f"{name} {v}"
@@ -121,7 +171,16 @@ _EXIT_RE = re.compile(r"exit code (\d+)")
 _ABORT_MARKERS = (
     "tool use was rejected", "user doesn't want to proceed",
     "[Request interrupted", "Request interrupted by user",
+    "user denied permission", "Tool execution was canceled",
 )
+_AGY_BG_ID_RE = re.compile(r"background task with task id:\s*(\S+)")
+_AGY_TASK_DONE_RE = re.compile(r'Task id "([^"]+)" (?:finished with result:|was canceled)')
+_AGY_EXIT_RE = re.compile(r"Command exited with code (\d+)")
+_USER_REQUEST_RE = re.compile(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", re.DOTALL)
+_AGY_STRIP_RES = [
+    re.compile(r"<ADDITIONAL_METADATA>.*?</ADDITIONAL_METADATA>", re.DOTALL),
+    re.compile(r"<USER_SETTINGS_CHANGE>.*?</USER_SETTINGS_CHANGE>", re.DOTALL),
+]
 
 
 def _looks_aborted(text: str) -> bool:
@@ -168,6 +227,8 @@ def extract_tool_events(path: Path) -> list[ToolEvent]:
         return []
 
     nodes = [n for n in (_read_json(ln.strip()) for ln in body.splitlines() if ln.strip()) if n]
+    if is_gemini_transcript(path) or _is_gemini_nodes(nodes):
+        return _extract_gemini_tool_events(path, nodes)
     notifs = _task_notifications(nodes)
 
     session_id = path.stem
@@ -245,9 +306,29 @@ def parse_session(path: Path) -> ParsedSession | None:
         return None
 
     slug = path.stem
+    if is_gemini_transcript(path) or _is_gemini_format(text):
+        return _parse_gemini(path, text)
     if _is_kiro_format(text):
         return _parse_kiro(path, slug, text)
     return _parse_claude(path, slug, text)
+
+
+def _is_gemini_nodes(nodes: list[dict]) -> bool:
+    return bool(nodes) and "step_index" in nodes[0] and nodes[0].get("type") in (
+        "USER_INPUT", "PLANNER_RESPONSE", "GENERIC", "SYSTEM_MESSAGE",
+    )
+
+
+def _is_gemini_format(body: str) -> bool:
+    for line in body.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        node = _read_json(line)
+        return bool(node) and "step_index" in node and node.get("type") in (
+            "USER_INPUT", "PLANNER_RESPONSE", "GENERIC", "SYSTEM_MESSAGE",
+        )
+    return False
 
 
 def _is_kiro_format(body: str) -> bool:
@@ -264,8 +345,9 @@ def _is_kiro_format(body: str) -> bool:
 
 
 def parse_agent_session(path: Path) -> ParsedAgentSession | None:
-    """Parse a subagent JSONL file."""
-    if not is_subagent_file(path):
+    """Parse a subagent JSONL file (Claude subagent or Antigravity nested conversation)."""
+    gemini = is_gemini_transcript(path)
+    if not is_subagent_file(path) and not gemini:
         return None
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -273,6 +355,8 @@ def parse_agent_session(path: Path) -> ParsedAgentSession | None:
         return None
     if not text.strip():
         return None
+    if gemini:
+        return _parse_agent_gemini(path, text)
     return _parse_agent_claude(path, text)
 
 
@@ -555,6 +639,222 @@ def _parse_kiro(path: Path, slug: str, body: str) -> ParsedSession | None:
         first_message=first_message,
         all_user_text=" ".join(messages),
         messages=messages,
+    )
+
+
+# ── Gemini / Antigravity CLI format ───────────────────────────────────────────
+
+def _unquote_agy_args(args: object) -> dict:
+    """Antigravity writes tool_calls[].args values as JSON-encoded strings (`"\"ls -la\""`)."""
+    if not isinstance(args, dict):
+        return {}
+    out = {}
+    for k, v in args.items():
+        if isinstance(v, str):
+            try:
+                out[k] = json.loads(v)
+            except ValueError:
+                out[k] = v
+        else:
+            out[k] = v
+    return out
+
+
+def _gemini_tool_name(name: str, args: dict) -> str:
+    if name == "call_mcp_tool" and args.get("ToolName"):
+        srv = args.get("ServerName") or ""
+        return f"mcp:{srv}/{args['ToolName']}" if srv else str(args["ToolName"])
+    return name
+
+
+def _extract_gemini_user_text(content: str) -> str:
+    if not content:
+        return ""
+    m = _USER_REQUEST_RE.search(content)
+    text = m.group(1) if m else content
+    if not m:
+        for rx in _AGY_STRIP_RES:
+            text = rx.sub("", text)
+    return _sanitize_text(text)
+
+
+def _agy_bg_outcomes(nodes: list[dict]) -> dict[str, tuple[bool, bool]]:
+    """task_id -> (is_error, interrupted) parsed from SYSTEM_MESSAGE completion notifications."""
+    out: dict[str, tuple[bool, bool]] = {}
+    for node in nodes:
+        if node.get("type") != "SYSTEM_MESSAGE":
+            continue
+        content = str(node.get("content") or "")
+        m = _AGY_TASK_DONE_RE.search(content)
+        if not m:
+            continue
+        canceled = "was canceled" in content
+        ec = _AGY_EXIT_RE.search(content)
+        is_error = (not canceled) and bool(ec and ec.group(1) != "0")
+        out[m.group(1)] = (is_error, canceled)
+    return out
+
+
+def _extract_gemini_tool_events(path: Path, nodes: list[dict]) -> list[ToolEvent]:
+    sid = gemini_session_id(path)
+    project_dir = gemini_summary_meta(path, sid).get("project_dir")
+    bg_outcomes = _agy_bg_outcomes(nodes)
+    events: list[ToolEvent] = []
+
+    for i, node in enumerate(nodes):
+        if node.get("type") != "PLANNER_RESPONSE":
+            continue
+        tcs = node.get("tool_calls") or []
+        if not isinstance(tcs, list) or not tcs:
+            continue
+        ts = node.get("created_at")
+        step_idx = node.get("step_index", i)
+
+        # Pair ONLY with consecutive GENERIC steps immediately following this PLANNER_RESPONSE:
+        # when a user denies permission on call #1 of a parallel batch, agy omits sibling GENERIC steps.
+        results: list[dict] = []
+        j = i + 1
+        while j < len(nodes) and len(results) < len(tcs) and nodes[j].get("type") == "GENERIC":
+            results.append(nodes[j])
+            j += 1
+
+        for idx, (tc, res) in enumerate(zip(tcs, results)):
+            if not isinstance(tc, dict):
+                continue
+            args = _unquote_agy_args(tc.get("args"))
+            tool = _gemini_tool_name(str(tc.get("name") or ""), args)
+            cmd = _derive_command(tool, args)
+            if _is_trivial_command(cmd):
+                continue
+            desc = str(args.get("toolSummary") or args.get("description") or "")
+            res_content = str(res.get("content") or "")
+            err_text = str(res.get("error") or "")
+
+            bg = _AGY_BG_ID_RE.search(res_content)
+            if bg and bg.group(1) in bg_outcomes:
+                is_error, interrupted = bg_outcomes[bg.group(1)]
+            else:
+                interrupted = _looks_aborted(f"{err_text}\n{res_content}")
+                ec = _AGY_EXIT_RE.search(res_content)
+                is_error = (not interrupted) and (
+                    res.get("status") == "ERROR" or bool(ec and ec.group(1) != "0")
+                )
+
+            preview = err_text or res_content
+            events.append(ToolEvent(
+                session_id=sid,
+                project_dir=project_dir,
+                event_ts=ts,
+                tool=tool,
+                command=scrub_secrets(cmd)[:500],
+                description=desc[:200],
+                output_preview=scrub_secrets(preview)[:200],
+                is_error=is_error,
+                interrupted=interrupted,
+                event_hash=hashlib.sha256(f"{sid}:{step_idx}:{idx}".encode()).hexdigest(),
+            ))
+    return events
+
+
+def _parse_gemini(path: Path, body: str) -> ParsedSession | None:
+    """Parse Antigravity CLI (`agy`) `transcript.jsonl` into a ParsedSession."""
+    sid = gemini_session_id(path)
+    meta = gemini_summary_meta(path, sid)
+    model: str | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
+    turn_count = 0
+    tool_call_count = 0
+    tool_names: set[str] = set()
+    files: set[str] = set()
+    first_message: str | None = None
+    messages: list[str] = []
+    has_user_message = False
+    has_reply = False
+
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        node = _read_json(line)
+        if node is None:
+            continue
+
+        ts = node.get("created_at")
+        if ts:
+            if started_at is None:
+                started_at = ts
+            ended_at = ts
+
+        kind = node.get("type")
+        if kind == "USER_INPUT" and node.get("source") == "USER_EXPLICIT":
+            text = _extract_gemini_user_text(str(node.get("content") or ""))
+            if text:
+                if first_message is None:
+                    first_message = text[:MAX_FIRST_MSG]
+                messages.append(text)
+                has_user_message = True
+
+        elif kind == "PLANNER_RESPONSE":
+            turn_count += 1
+            has_reply = True
+            if model is None and node.get("model"):
+                model = str(node["model"])
+            for tc in (node.get("tool_calls") or []):
+                if isinstance(tc, dict):
+                    tool_call_count += 1
+                    args = _unquote_agy_args(tc.get("args"))
+                    name = _gemini_tool_name(str(tc.get("name") or ""), args)
+                    if name:
+                        tool_names.add(name)
+                    _extract_paths(args, files)
+            # Visible reply only — inner `thinking` is excluded from search chunks
+            text = _sanitize_text(str(node.get("content") or ""))
+            if text:
+                messages.append(text)
+
+    if not has_user_message or not has_reply:
+        return None
+
+    return ParsedSession(
+        session_id=sid,
+        source="gemini",
+        project_dir=meta.get("project_dir"),
+        git_branch=None,
+        slug=meta.get("title") or sid,
+        model=model,
+        started_at=started_at,
+        ended_at=ended_at,
+        turn_count=turn_count,
+        tool_call_count=tool_call_count,
+        tool_names=sorted(tool_names),
+        files=sorted(files),
+        first_message=first_message,
+        all_user_text=" ".join(messages),
+        messages=messages,
+    )
+
+
+def _parse_agent_gemini(path: Path, body: str) -> ParsedAgentSession | None:
+    session = _parse_gemini(path, body)
+    if session is None:
+        return None
+    meta = gemini_summary_meta(path, session.session_id)
+    return ParsedAgentSession(
+        agent_id=session.session_id,
+        parent_session_id=meta.get("parent_conversation_id"),
+        agent_slug=session.slug,
+        project_dir=session.project_dir,
+        cwd=session.project_dir,
+        model=session.model,
+        turn_count=session.turn_count,
+        tool_call_count=session.tool_call_count,
+        tool_names=session.tool_names,
+        first_message=session.first_message,
+        all_user_text=session.all_user_text,
+        message_count=len(session.messages),
+        first_seen_at=session.started_at,
+        last_updated_at=session.ended_at,
     )
 
 

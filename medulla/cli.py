@@ -27,9 +27,9 @@ console = Console()
 @app.command()
 def scan(
     force: Annotated[bool, typer.Option("--force", "-f", help="Re-index all sessions, not just new ones")] = False,
-    source: Annotated[Optional[str], typer.Option("--source", help="Only scan: claude | kiro")] = None,
+    source: Annotated[Optional[str], typer.Option("--source", help="Only scan: claude | kiro | gemini")] = None,
 ):
-    """Index new/changed Claude and Kiro sessions."""
+    """Index new/changed Claude, Kiro, and Gemini sessions."""
     from medulla.db.database import connect
     from medulla.episodic.scanner import scan as do_scan
 
