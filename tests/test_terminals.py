@@ -171,3 +171,29 @@ def test_a_display_that_cannot_wake_says_why_and_gives_the_command(monkeypatch):
     monkeypatch.setattr(t, "wake_display", lid_closed)
     ok, detail = t.open_beside("x", "/w", "f", lambda: True, env={"MEDULLA_TERMINAL": "ghostty"}, runner=Runner())
     assert not ok and "did not wake" in detail and "Run it yourself: cd /w && x" in detail
+
+
+# ── Antigravity / Gemini CLI support ──────────────────────────────────────────
+
+def test_agy_started_matches_agy_process_not_wrapper_shells():
+    out = ("/bin/zsh -lic agy -i '/pickoff introToNeon opened automatically'\n"
+           "/Users/dev/.local/bin/agy -i /pickoff introToNeon opened automatically\n")
+    assert t.agy_started("introToNeon", Runner({"ps": out}))() is True
+    assert t.agy_started("introToNeon", Runner({"ps": out.splitlines()[0]}))() is False
+    assert t.agy_started("other", Runner({"ps": out}))() is False
+
+
+def test_ghostty_find_pane_falls_back_to_agy_title_with_cwd_tiebreak():
+    panes = [dict(window="w", tab="t", id="a", title="✳ claudeSession", cwd="/one"),
+             dict(window="w", tab="t", id="b", title="agy", cwd="/one"),
+             dict(window="w", tab="t", id="c", title="agy -c", cwd="/two"),
+             dict(window="w", tab="t", id="d", title="agy-docs", cwd="/three")]
+    assert t.find_pane(panes, "introToNeon", "/two", fallback_title="agy")["id"] == "c"
+    with pytest.raises(LookupError):
+        t.find_pane([panes[3]], "introToNeon", "/three", fallback_title="agy")
+    with pytest.raises(LookupError):
+        t.find_pane(panes, "introToNeon", fallback_title="agy")
+    r = Runner({"osa:repeat with w in windows": "w1\tt1\tp2\tagy -c\t/w\n", "osa:new surface configuration": "p9"})
+    detail, _ = t.ghostty_open("agy -i '/pickoff introToNeon'", "/w", {"SHELL": "/bin/sh"}, r,
+                               title="introToNeon", fallback_title="agy")
+    assert detail == "split right of Ghostty pane p2"

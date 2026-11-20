@@ -28,7 +28,7 @@ def state_dir() -> str:
 
 def record(d: dict, sdir: str | None = None) -> str | None:
     """Write this session's window size, fill and name. Atomic, so a reader never sees half a file."""
-    sid = d.get("session_id")
+    sid = d.get("session_id") or d.get("conversation_id")
     if not sid:
         return None
     cw = d.get("context_window") or {}
@@ -37,7 +37,8 @@ def record(d: dict, sdir: str | None = None) -> str | None:
     out = os.path.join(sdir, f"{sid}.ctx.json")
     with open(out + ".tmp", "w") as fh:
         json.dump({"size": cw.get("context_window_size"), "pct": cw.get("used_percentage"),
-                   "name": d.get("session_name"), "model": (d.get("model") or {}).get("id")}, fh)
+                   "name": d.get("session_name") or d.get("conversation_title"),
+                   "model": (d.get("model") or {}).get("id")}, fh)
     os.replace(out + ".tmp", out)
     return out
 
@@ -51,14 +52,37 @@ def _tokens(n: float) -> str:
     return f"{n / 1e6:.3g}M" if n >= 1e6 else f"{round(n / 1e3)}k"
 
 
+def _five_hour_pct(d: dict) -> float:
+    """5-hour usage % from Claude's `rate_limits.five_hour` or Antigravity's `quota` buckets."""
+    claude_pct = ((d.get("rate_limits") or {}).get("five_hour") or {}).get("used_percentage")
+    if claude_pct is not None:
+        return float(claude_pct)
+    quota = d.get("quota")
+    if not isinstance(quota, dict) or not quota:
+        return 0.0
+    model = ((d.get("model") or {}).get("display_name") or (d.get("model") or {}).get("id") or "").lower()
+    preferred = "gemini-5h" if "gemini" in model else "3p-5h"
+    candidates = [
+        quota.get(preferred),
+        *(v for k, v in quota.items() if k.endswith("-5h")),
+        quota.get("gemini-weekly"),
+        *quota.values(),
+    ]
+    for bucket in candidates:
+        if isinstance(bucket, dict) and bucket.get("remaining_fraction") is not None:
+            return min(100.0, max(0.0, (1.0 - float(bucket["remaining_fraction"])) * 100.0))
+    return 0.0
+
+
 def render(d: dict) -> str:
     """[Model] | session name, then context and 5-hour usage bars, the context with its token count."""
     cw = d.get("context_window") or {}
     used = cw.get("used_percentage") or 0
     size = cw.get("context_window_size")
-    five = (((d.get("rate_limits") or {}).get("five_hour") or {}).get("used_percentage")) or 0
-    model = (d.get("model") or {}).get("display_name") or "Claude"
-    name = d.get("session_name")
+    five = _five_hour_pct(d)
+    default_model = "Antigravity" if d.get("product") == "antigravity" else "Claude"
+    model = (d.get("model") or {}).get("display_name") or default_model
+    name = d.get("session_name") or d.get("conversation_title")
     tokens = f" ({_tokens(size * used / 100)}/{_tokens(size)})" if size else ""
     line1 = f"\033[36m[{model}]" + (f" | {name}" if name else "") + "\033[0m"
     line2 = (f"Context {_bar(round(used), 32)} {round(used)}%{tokens} | "

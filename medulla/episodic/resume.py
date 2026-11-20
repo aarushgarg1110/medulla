@@ -32,7 +32,7 @@ def stale_note(conn: sqlite3.Connection, hint: str) -> str:
     stale = scanner.stale_sessions(conn)
     if not stale:
         return ""
-    names = [scanner.title_of(p) or p.stem[:8] for p in stale[-3:]]
+    names = [scanner.title_of(p) or scanner.session_id_for(p)[:8] for p in stale[-3:]]
     n = len(stale)
     return (f"\n⚠ {n} transcript{'s' if n > 1 else ''} changed since "
             f"{'they were' if n > 1 else 'it was'} indexed ({', '.join(names)}{', …' if n > 3 else ''}): "
@@ -91,9 +91,10 @@ def resume(conn: sqlite3.Connection, name: str, last: int = 2) -> str:
     date, and its handoff report, or its last `last` chunks when it has none. Raises NotFound."""
     indexed = []
     for p in scanner.stale_sessions(conn, settle_s=0):
-        if p.stem.startswith(name) or scanner.title_of(p) == name:
+        sid = scanner.session_id_for(p)
+        if sid.startswith(name) or scanner.title_of(p) == name:
             if scanner.index_session(conn, p) == "indexed":
-                indexed.append(p.stem)
+                indexed.append(sid)
     s = _resolve(conn, name)
     if s is None:
         raise not_found(conn, name)

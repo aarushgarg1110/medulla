@@ -324,8 +324,11 @@ def test_resume_command_exits_1_for_an_unknown_name(claude_projects):
 def test_nextpart_command_prints_or_explains(tmp_path, monkeypatch):
     monkeypatch.setenv("MEDULLA_DIR", str(tmp_path / "m"))
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    monkeypatch.delenv("ANTIGRAVITY_CONVERSATION_ID", raising=False)
     result = runner.invoke(app, ["nextpart", "--from", "fooPart3", "--dry-run"])
     assert result.exit_code == 0 and "claude -n fooPart4" in result.output
+    result = runner.invoke(app, ["nextpart", "--from", "fooPart3", "--dry-run", "--harness", "gemini"])
+    assert result.exit_code == 0 and "agy -i '/pickoff fooPart3" in result.output
     result = runner.invoke(app, ["nextpart"])
     assert result.exit_code == 1 and "--from" in result.output
 

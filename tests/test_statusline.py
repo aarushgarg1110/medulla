@@ -26,6 +26,7 @@ INPUT = {"session_id": "s-1", "session_name": "fooPart2",
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("MEDULLA_DIR", str(tmp_path / "medulla"))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    monkeypatch.setenv("ANTIGRAVITY_CONFIG_DIR", str(tmp_path / "agy"))
     return tmp_path
 
 
@@ -191,3 +192,52 @@ def test_cli_tap_installs_only_the_launcher_and_prints_its_line(home):
     r = runner.invoke(app, ["statusline", "setup", "--tap"])
     assert str(home / "medulla" / "bin" / "statusline") in r.output and "--tap" in r.output
     assert (home / "medulla" / "bin" / "statusline").exists() and json.loads(sp.read_text()) == {}
+
+
+# ── Antigravity / Gemini CLI support ──────────────────────────────────────────
+
+def test_render_antigravity_payload_uses_conversation_title_and_quota():
+    agy_input = {
+        "product": "antigravity",
+        "conversation_id": "c-1",
+        "conversation_title": "introToNeon",
+        "model": {"id": "gemini-4-neon-high", "display_name": "Gemini 4 Neon (High)"},
+        "context_window": {"context_window_size": 1_048_576, "used_percentage": 20.0},
+        "quota": {"gemini-5h": {"remaining_fraction": 0.96}, "gemini-weekly": {"remaining_fraction": 0.70}},
+    }
+    assert _plain(sl.render(agy_input)) == (
+        "[Gemini 4 Neon (High)] | introToNeon\n"
+        "Context █░░░░░░░ 20% (210k/1.05M) | Usage ░░░░░░░░ 4%"
+    )
+    # 3P model prefers 3p-5h; missing 5h falls back to weekly; empty/no-fraction quota -> 0%
+    third_party = {"model": {"display_name": "Opus 5.5"}, "quota": {"3p-5h": {"remaining_fraction": 0.5}}}
+    assert "Usage ████░░░░ 50%" in _plain(sl.render(third_party))
+    weekly_only = {"product": "antigravity", "quota": {"gemini-weekly": {"remaining_fraction": 0.75}}}
+    assert _plain(sl.render(weekly_only)).startswith("[Antigravity]\n") and "Usage ██░░░░░░ 25%" in _plain(sl.render(weekly_only))
+    no_frac = {"product": "antigravity", "quota": {"gemini-5h": {"disabled": True}}}
+    assert "Usage ░░░░░░░░ 0%" in _plain(sl.render(no_frac))
+
+
+def test_record_antigravity_payload_captures_conversation_id_and_title(home):
+    agy_input = {
+        "conversation_id": "c-42",
+        "conversation_title": "introToNeon",
+        "model": {"id": "gemini-4-neon-high"},
+        "context_window": {"context_window_size": 1_048_576, "used_percentage": 14.5},
+    }
+    p = Path(sl.record(agy_input))
+    assert p == home / "medulla" / "state" / "c-42.ctx.json"
+    assert json.loads(p.read_text()) == {"size": 1_048_576, "pct": 14.5, "name": "introToNeon",
+                                         "model": "gemini-4-neon-high"}
+
+
+def test_statusline_setup_target_gemini_reads_and_writes_agy_settings(home):
+    sp = home / "agy" / "settings.json"
+    sp.parent.mkdir(parents=True)
+    sp.write_text(json.dumps({"model": "Gemini 4 Neon (High)"}))
+    r = runner.invoke(app, ["statusline", "setup", "--target", "gemini", "--yes"])
+    assert r.exit_code == 0 and "Done" in r.output
+    assert "statusLine" in json.loads(sp.read_text())
+    assert not (home / "claude" / "settings.json").exists()
+    r = runner.invoke(app, ["statusline", "undo", "--target", "gemini"])
+    assert r.exit_code == 0 and "Removed" in r.output and "statusLine" not in json.loads(sp.read_text())

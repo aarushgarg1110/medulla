@@ -20,7 +20,7 @@ import shlex
 import sys
 from pathlib import Path
 
-from medulla import statusline
+from medulla import harnesses, statusline
 
 LAUNCHER = """#!/bin/sh
 # medulla's statusline launcher. It never moves: statusline.target names the Python and the script to
@@ -31,8 +31,8 @@ exec "$py" -I "$script" "$@"
 """
 
 
-def settings_path() -> Path:
-    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json"
+def settings_path(target: str = "claude") -> Path:
+    return harnesses.get(target).settings_path()
 
 
 def launcher_path() -> Path:
@@ -84,8 +84,8 @@ def _load(sp: Path) -> dict:
     return json.loads(sp.read_text()) if sp.exists() else {}
 
 
-def plan(sp: Path | None = None) -> dict:
-    sp = sp or settings_path()
+def plan(sp: Path | None = None, target: str = "claude") -> dict:
+    sp = sp or settings_path(target)
     cur = (_load(sp).get("statusLine") or {}).get("command")
     if _ours(cur):
         return {"mode": "present", "current": cur}
@@ -109,9 +109,9 @@ def tap_line() -> str:
     return f"printf '%s' \"$input\" | {shlex.quote(str(launcher_path()))} --tap"
 
 
-def apply(sp: Path | None = None) -> dict:
+def apply(sp: Path | None = None, target: str = "claude") -> dict:
     """Do what plan() says. The first apply copies settings.json to settings.json.medulla-backup."""
-    sp = sp or settings_path()
+    sp = sp or settings_path(target)
     p = plan(sp)
     if p["mode"] == "present":
         return p
@@ -127,8 +127,8 @@ def apply(sp: Path | None = None) -> dict:
     return {**p, "command": cmd}
 
 
-def undo(sp: Path | None = None) -> str:
-    sp = sp or settings_path()
+def undo(sp: Path | None = None, target: str = "claude") -> str:
+    sp = sp or settings_path(target)
     settings = _load(sp)
     cur = (settings.get("statusLine") or {}).get("command")
     if not _ours(cur):

@@ -18,9 +18,11 @@ REPORT = "## 4. Immediate next action\nShip the PR."
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("MEDULLA_DIR", str(tmp_path / "medulla"))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    monkeypatch.setenv("ANTIGRAVITY_CONFIG_DIR", str(tmp_path / "agy"))
     for k in ("MEDULLA_AUTOHANDOFF", "MEDULLA_AUTOHANDOFF_AT", "MEDULLA_CONTEXT_WINDOW",
               "CLAUDE_PLUGIN_OPTION_AUTOHANDOFF", "CLAUDE_PLUGIN_OPTION_AUTOHANDOFF_AT",
-              "CLAUDE_PLUGIN_OPTION_CONTEXT_WINDOW", "CLAUDE_CODE_SESSION_ID"):
+              "CLAUDE_PLUGIN_OPTION_CONTEXT_WINDOW", "CLAUDE_CODE_SESSION_ID",
+              "ANTIGRAVITY_CONVERSATION_ID", "ANTIGRAVITY_APP_DATA_DIR"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setattr(ah, "_sleep", lambda s: None)
     return tmp_path
@@ -333,4 +335,154 @@ def test_a_long_or_messy_transcript_is_read_from_its_tail(home, monkeypatch):
                  + "\n" + p.read_text())
     monkeypatch.setattr(ah, "_TAIL_BYTES", len(p.read_bytes()) - 10)
     assert ah.context_tokens(str(p)) == 120_000
+    monkeypatch.setenv("MEDULLA_AUTOHANDOFF", "1")
     assert _main({"hook_event_name": "SessionStart", "session_id": "s1"}) == ""
+    assert _main({}) == ""
+
+
+# ── Antigravity / Gemini CLI support ──────────────────────────────────────────
+
+def agy_transcript(home, tokens, reply="done", last="assistant"):
+    rows = [{"step_index": 0, "type": "USER_INPUT", "content": "<USER_REQUEST>\ngo\n</USER_REQUEST>"}]
+    if last == "assistant":
+        rows.append({"step_index": 1, "type": "PLANNER_RESPONSE", "model": "gemini-4-neon-high",
+                     "input_tokens": 100, "cache_read_tokens": tokens - 100, "content": reply})
+    p = home / "agy_transcript.jsonl"
+    p.write_text("\n".join(json.dumps(r) for r in rows))
+    return str(p)
+
+
+def _write_ctx(home, sid, size=1_000_000, name="introToNeon"):
+    sdir = home / "medulla" / "state"
+    sdir.mkdir(parents=True, exist_ok=True)
+    (sdir / f"{sid}.ctx.json").write_text(json.dumps({"size": size, "name": name}))
+
+
+def test_agy_context_tokens_and_reply_detection(home):
+    p = agy_transcript(home, 250_000)
+    assert ah.context_tokens(p) == 250_000
+    assert ah.wait_for_reply(p) is True
+    assert ah._reply_written(ah._entries(agy_transcript(home, 100, last="user"), tail=True)) is False
+
+
+def test_agy_pre_invocation_injects_context_once_per_turn_and_marks_handoff(home, monkeypatch):
+    monkeypatch.setenv("MEDULLA_AUTOHANDOFF", "true")
+    _write_ctx(home, "c1", size=1_000_000, name="introToNeon")
+    tp = agy_transcript(home, 300_000)
+    ev = {"hookEventName": "PreInvocation", "conversationId": "c1", "transcriptPath": tp,
+          "lastUserInput": "/handoff focus on tests", "initialNumSteps": 4, "invocationNum": 1}
+    out = json.loads(_main(ev))
+    msg = out["injectSteps"][0]["systemMessage"]["systemMessage"]
+    assert msg == "[context] 30.0% of 1,000,000 tokens (300,000) · this session: introToNeon"
+    assert (home / "medulla" / "state" / "c1.handoff").read_text() == "user"
+    # Second invocation in same turn (same initialNumSteps) is deduped -> {}
+    assert json.loads(_main({**ev, "invocationNum": 2})) == {}
+    # Next turn (new initialNumSteps) injects again; without initialNumSteps, invocationNum > 1 skips
+    assert "injectSteps" in json.loads(_main({**ev, "initialNumSteps": 7, "lastUserInput": "next"}))
+    ev_no_steps = {"hookEventName": "PreInvocation", "conversationId": "c2", "transcriptPath": tp, "invocationNum": 2}
+    assert json.loads(_main(ev_no_steps)) == {}
+
+
+def test_agy_post_tool_use_marks_handoff_skill_and_returns_empty_json(home, monkeypatch):
+    monkeypatch.setenv("MEDULLA_AUTOHANDOFF", "true")
+    ev = {"hookEventName": "PostToolUse", "conversationId": "c1",
+          "toolCall": {"name": "read_file", "args": {"Path": "/x/skills/handoff/SKILL.md"}}}
+    assert json.loads(_main(ev)) == {}
+    assert (home / "medulla" / "state" / "c1.handoff").read_text() == "skill"
+    other = {"hookEventName": "PostToolUse", "conversationId": "c2",
+             "toolCall": {"name": "read_file", "args": {"Path": "/x/README.md"}}}
+    assert json.loads(_main(other)) == {}
+    assert not (home / "medulla" / "state" / "c2.handoff").exists()
+
+
+def test_agy_stop_nudges_with_continue_and_respects_continuation_and_reason(home, monkeypatch):
+    monkeypatch.setenv("MEDULLA_AUTOHANDOFF", "true")
+    assert ah.threshold("claude") == 93.0
+    assert ah.threshold("gemini") == 45.0
+    _write_ctx(home, "c1", size=1_000_000, name="introToNeon")
+    # Below Gemini's 45% default -> silent; above 45% (46%) -> nudges before agy's ~50% compaction
+    tp_low = agy_transcript(home, 440_000)
+    ev_low = {"hookEventName": "Stop", "conversationId": "c0", "transcriptPath": tp_low,
+              "terminationReason": "NO_TOOL_CALL", "continuationActive": False}
+    _write_ctx(home, "c0", size=1_000_000, name="introToNeon")
+    assert json.loads(_main(ev_low)) == {}
+    # Near 45% (42% >= 0.9 * 45%): context_line announces the 45% threshold
+    assert "autohandoff takes over at 45%" in ah.context_line("c0", agy_transcript(home, 420_000), harness="gemini")
+
+    tp = agy_transcript(home, 460_000)
+    ev = {"hookEventName": "Stop", "conversationId": "c1", "transcriptPath": tp,
+          "terminationReason": "NO_TOOL_CALL", "continuationActive": False}
+    out = json.loads(_main(ev))
+    assert out["decision"] == "continue" and "46%" in out["reason"] and "45%" in out["reason"]
+    # Already continuing or user canceled -> empty {}
+    assert json.loads(_main({**ev, "conversationId": "c2", "continuationActive": True})) == {}
+    assert json.loads(_main({**ev, "conversationId": "c3", "terminationReason": "USER_CANCELED"})) == {}
+
+
+def test_agy_stop_opens_next_agy_pane_on_handoff_report(home, monkeypatch):
+    monkeypatch.setenv("MEDULLA_AUTOHANDOFF", "true")
+    _write_ctx(home, "c1", size=1_000_000, name="introToNeon")
+    tp = agy_transcript(home, 950_000, reply=REPORT)
+    ah._mark("c1", "", "hook")
+    seen = []
+
+    def spawn(prev, nxt, event):
+        seen.append((prev, nxt, event.get("cwd")))
+        return True, "split right of Ghostty pane p1"
+
+    out = io.StringIO()
+    ev = {"hookEventName": "Stop", "conversationId": "c1", "transcriptPath": tp, "cwd": "/work",
+          "terminationReason": "NO_TOOL_CALL", "continuationActive": False}
+    ah.main(stdin=io.StringIO(json.dumps(ev)), stdout=out, spawn=spawn)
+    assert json.loads(out.getvalue()) == {}
+    assert seen == [("introToNeon", "introToNeonPart2", "/work")]
+    assert ah._spawned("c1").read_text() == "introToNeonPart2"
+
+    # Interrupted gemini open checks agy_started and formats `agy -i` command
+    ah._opening("c2").write_text(json.dumps({"prev": "introToNeon", "next": "introToNeonPart2",
+                                             "cwd": "/work", "harness": "gemini"}))
+    monkeypatch.setattr(ah, "_running", lambda nxt, prev="", harness="claude": False)
+    notice = ah.interrupted("c2")
+    assert "agy -i '/pickoff introToNeon " in notice
+
+
+def test_agy_nextpart_uses_antigravity_conversation_id_and_agy_launch_line(home, monkeypatch):
+    _write_ctx(home, "c9", size=1_000_000, name="introToNeon")
+    monkeypatch.setenv("ANTIGRAVITY_CONVERSATION_ID", "c9")
+    assert ah.current_session() == ("c9", "introToNeon")
+    ok, msg = ah.nextpart(dry_run=True)
+    assert ok and "agy -i '/pickoff introToNeon " in msg
+    monkeypatch.setenv("MEDULLA_TERMINAL", "print")
+    ok, detail = ah.terminal_spawn("introToNeon", "introToNeonPart2", {"cwd": "/work"}, harness="gemini")
+    assert ok and "agy -i '/pickoff introToNeon " in detail
+
+
+def test_config_toml_autohandoff_and_shell_hook_without_claude_plugin_root(home):
+    cfg = home / "medulla" / "config.toml"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("[autohandoff]\nenabled = true\nat = 85\n")
+    assert ah.enabled() is True
+    assert ah.threshold() == 85.0
+    assert ah.threshold("gemini") == 85.0
+    assert ah.threshold_source() == "from config.toml"
+
+    # Corrupt config.toml fails open to default
+    cfg.write_text("not toml = [")
+    assert ah.enabled() is False and ah.threshold_source() == "the default"
+
+    # Shell gate honors config.toml AND resolves root without CLAUDE_PLUGIN_ROOT
+    cfg.write_text("[autohandoff]\nenabled = true\n")
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("CLAUDE_PLUGIN_ROOT", "PLUGIN_ROOT", "MEDULLA_AUTOHANDOFF", "CLAUDE_PLUGIN_OPTION_AUTOHANDOFF")}
+    env["MEDULLA_DIR"] = str(home / "medulla")
+    _write_ctx(home, "c1", size=1_000_000, name="introToNeon")
+    ev = {"hookEventName": "Stop", "conversationId": "c1", "transcriptPath": agy_transcript(home, 950_000),
+          "terminationReason": "NO_TOOL_CALL"}
+    r = subprocess.run([str(ROOT / "hooks" / "autohandoff.sh")], input=json.dumps(ev),
+                       capture_output=True, text=True, env=env, timeout=60)
+    assert r.returncode == 0 and json.loads(r.stdout)["decision"] == "continue"
+
+    # Explicit MEDULLA_AUTOHANDOFF=false overrides config.toml in shell gate too
+    r_off = subprocess.run([str(ROOT / "hooks" / "autohandoff.sh")], input=json.dumps(ev),
+                           capture_output=True, text=True, env={**env, "MEDULLA_AUTOHANDOFF": "false"}, timeout=60)
+    assert r_off.returncode == 0 and r_off.stdout == ""

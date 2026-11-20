@@ -1,0 +1,30 @@
+{
+  "medulla-autohandoff": {
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "./hooks/autohandoff.sh",
+        "timeout": 10
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "read_file",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./hooks/autohandoff.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "./hooks/autohandoff.sh",
+        "timeout": 60
+      }
+    ]
+  }
+}

@@ -12,10 +12,10 @@ ready to pick back up.
 <!-- demo GIF: autohandoff opening the next part (coming) -->
 
 Claude Code starts every session blank, yet your transcripts already record every decision, command and
-dead end you've worked through, in files nothing ever reads. medulla is dual-layer memory for Claude Code
-and Kiro: it indexes every session into a searchable journal, and turns the papers and pages you give it
-into a linked wiki, all in one local SQLite file. Ask what you decided last month, find the command you
-ran, or carry one piece of work across as many sessions as it needs.
+dead end you've worked through, in files nothing ever reads. medulla is dual-layer memory for Claude Code,
+Antigravity CLI (`agy`) and Kiro: it indexes every session into a searchable journal, and turns the papers
+and pages you give it into a linked wiki, all in one local SQLite file. Ask what you decided last month,
+find the command you ran, or carry one piece of work across as many sessions as it needs.
 
 <p align="center">
   <a href="#install">Install</a> •
@@ -56,7 +56,7 @@ Install the CLI and index your history:
 
 ```bash
 uv tool install git+https://github.com/aarushgarg1110/medulla
-medulla scan
+medulla scan    # all sources; add --source claude for Claude Code only
 ```
 
 Then add the plugin:
@@ -81,6 +81,45 @@ everything, raise the limit in `~/.claude/settings.json`:
 { "cleanupPeriodDays": 99999 }
 ```
 
+### Antigravity CLI (`agy`)
+
+Install the CLI and index your history:
+
+```bash
+uv tool install git+https://github.com/aarushgarg1110/medulla
+medulla scan    # all sources; add --source gemini for Antigravity only
+```
+
+Then register a local checkout of this repo as a native Antigravity plugin in `~/.gemini/config/plugins.json`
+(Antigravity requires an absolute parent directory path):
+
+```json
+{
+  "entries": [
+    { "path": "/absolute/path/to/parent-of-medulla", "include_only": ["medulla"] }
+  ]
+}
+```
+
+To let autohandoff read your context window size and open the next part beside the current pane, wire the
+statusline tap and turn autohandoff on in `~/.medulla/config.toml`:
+
+```bash
+medulla statusline setup --target gemini
+```
+
+```toml
+# ~/.medulla/config.toml
+[autohandoff]
+enabled = true
+# at = 45   # optional override (defaults to 93% on Claude, 45% on Antigravity)
+```
+
+Optional: Antigravity titles terminal panes after the launch command (`agy`, `agy -c`) rather than the
+session's `/rename` title. medulla falls back to matching the `agy` pane by working directory, or you can
+add an opt-in `"title"` script in `~/.gemini/antigravity-cli/settings.json` so Ghostty/tmux panes show the
+session name directly.
+
 ### Kiro, or Claude Code without the plugin
 
 The same CLI also runs as a plain MCP server. You get search and resume, without the skills or
@@ -88,7 +127,7 @@ autohandoff:
 
 ```bash
 uv tool install git+https://github.com/aarushgarg1110/medulla
-medulla scan
+medulla scan                              # all sources; add --source claude|kiro for one only
 claude mcp add medulla medulla -- mcp     # Claude Code
 ```
 
@@ -160,7 +199,7 @@ To stop thinking about the context window at all, turn on autohandoff: open `/co
 
 ```mermaid
 flowchart LR
-    T["Session transcripts<br/>~/.claude/projects, ~/.kiro/sessions"] -->|"scan: changed files only"| P[parse]
+    T["Session transcripts<br/>~/.claude/projects, ~/.gemini/antigravity-cli/brain, ~/.kiro/sessions"] -->|"scan: changed files only"| P[parse]
     P -->|"your text + Claude's text"| C["chunk at topic shifts"]
     P -->|"tool calls, secrets scrubbed"| H[("command history")]
     C --> DB[("SQLite<br/>FTS5 + sqlite-vec")]
@@ -249,8 +288,8 @@ claude plugin install medulla@medulla --config autohandoff=true
 
 | Option | Default | Environment override |
 |---|---|---|
-| autohandoff | off | `MEDULLA_AUTOHANDOFF` |
-| autohandoff_at | 93% of the window (50–99) | `MEDULLA_AUTOHANDOFF_AT` (no floor) |
+| autohandoff | off | `MEDULLA_AUTOHANDOFF` (or `[autohandoff] enabled` in `~/.medulla/config.toml`) |
+| autohandoff_at | 93% (Claude), 45% (Antigravity) | `MEDULLA_AUTOHANDOFF_AT` (or `[autohandoff] at` in `config.toml`; no floor) |
 | context_window | detected | `MEDULLA_CONTEXT_WINDOW` |
 | terminal | detected | `MEDULLA_TERMINAL`: tmux, ghostty, iterm, terminal or print |
 
@@ -269,7 +308,15 @@ claude plugin install medulla@medulla --config autohandoff=true
   context, every part hands off on its first turn.
 - **macOS terminals need an awake display.** With the lid closed, use tmux. If the Mac sleeps while a part
   is opening, your next prompt in that session tells you; `medulla nextpart` opens it by hand.
-- **The window size** is reported only to the statusline. `/medulla:statusline` adds a context bar that
+- **Why Antigravity defaults to 45%:** Antigravity CLI enforces a non-disableable auto-compaction
+  checkpoint around ~50% (~500k tokens on a 1M window). Handing off at 45% beats that compaction and splits
+  long work into discrete `Part1`/`Part2` sessions instead of one multi-compaction mega-transcript. In
+  medulla, split parts are much better than a single mega-session: scans only re-chunk and re-embed the
+  active part (earlier parts skip by `mtime`), search deduplicates to one hit per `session_id` (so split
+  parts can each surface in results), recency decays from each part's own `started_at`, and `resume`/`forget`
+  act per chapter. If Antigravity ever adds a setting to raise or disable auto-compaction, override `at` in
+  `~/.medulla/config.toml`.
+- **The window size** is reported only to the statusline. `/medulla:statusline` (or `medulla statusline setup --target claude|gemini`) adds a context bar that
   records it, or wraps the statusline you have without changing its output. Without it, medulla uses the
   configured size, then a `[1m]` model in your settings, then 200k, and switches to 1M once the context
   passes 200k tokens.
@@ -280,12 +327,12 @@ The CLI is for you; the MCP tools are what Claude calls. Most capabilities have 
 
 | What | CLI | MCP tool |
 |---|---|---|
-| Index new and changed sessions | `medulla scan [--force] [--source claude\|kiro]` | `medulla_search` with `refresh`; `medulla_resume` indexes its session |
+| Index new and changed sessions | `medulla scan [--force] [--source claude\|kiro\|gemini]` | `medulla_search` with `refresh`; `medulla_resume` indexes its session |
 | Search sessions, wiki and commands | `medulla search "<query>" [--layer episodic\|semantic\|events] [--bm25-only] [-n N]` | `medulla_search` |
 | Read the top hits in full | `medulla search "<query>" --expand N` | `medulla_search` with `expand` |
 | Resume a session | `medulla resume <name>` | `medulla_resume` |
 | Forget a session: out of the index and every later scan; asks before deleting the transcript | `medulla forget <name> [--delete-transcript]`, `medulla forget --list`, `medulla forget --undo <name>` | `medulla_forget` (never deletes the transcript) |
-| Open the next part by hand | `medulla nextpart [--from <title>] [--dry-run]` | |
+| Open the next part by hand | `medulla nextpart [--from <title>] [--harness claude\|gemini] [--dry-run]` | |
 | Recent sessions | `medulla list [--project <path>]` | `medulla_list` |
 | A session's chunks, agents and files | `medulla session-detail <id> [--chunk N]` | `medulla_session_detail` |
 | A session and its subagents | | `medulla_session_tree` |
@@ -298,7 +345,7 @@ The CLI is for you; the MCP tools are what Claude calls. Most capabilities have 
 | Remove a wiki page or raw file | `medulla remove <type/slug\|raw/file> [--cascade]` | `medulla_remove` |
 | Embeddings and related links | `medulla embed [--force] [--reindex-edges]` | `medulla_reindex_edges` |
 | Wiki LLM provider | `medulla use bedrock\|anthropic\|ollama [--model <id>]` | |
-| Statusline | `medulla statusline setup\|undo` | the `/medulla:statusline` skill |
+| Statusline | `medulla statusline setup\|undo [--target claude\|gemini]` | the `/medulla:statusline` skill |
 | Search quality (NDCG@k, MRR) | `medulla eval`, `medulla eval-gen` | |
 | Start over | `medulla reset [--all] [-y]` | |
 | Run the MCP server | `medulla mcp` | |
@@ -358,10 +405,12 @@ before they are stored. Conversation text is stored as written, in your local da
 </details>
 
 <details>
-<summary><b>Does it work with Kiro?</b></summary>
+<summary><b>Does it work with Antigravity CLI or Kiro?</b></summary>
 
-Kiro sessions are indexed, and the MCP server works in Kiro. The handoff and pickoff skills are written in
-the portable Agent Skills format. Autohandoff relies on Claude Code hooks, so it is Claude Code only for now.
+Antigravity CLI (`agy`, source name `gemini`) has full support: native plugin manifests
+(`.antigravity-plugin/plugin.json`, `mcp_config.json`, `hooks.json`), session/subagent/tool-event indexing,
+`medulla resume`, statusline tap, and autohandoff (defaulting to 45% to beat `agy`'s ~50% auto-compaction).
+Kiro sessions are indexed and the MCP server works in Kiro; autohandoff is Claude Code and Antigravity only.
 </details>
 
 <details>

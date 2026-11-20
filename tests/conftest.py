@@ -33,10 +33,12 @@ def patch_search_provider(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def no_real_transcripts(monkeypatch, tmp_path_factory):
-    """Point the scanner at an empty projects dir, so no test reads ~/.claude/projects. Search now
-    checks the transcripts for staleness, which would otherwise make every search test depend on
-    whatever sessions happen to be on the machine."""
+    """Point the scanner at empty dirs, so no test reads ~/.claude/projects, ~/.kiro/sessions,
+    or ~/.gemini/antigravity-cli/brain. Search checks transcripts for staleness, which would
+    otherwise make every search test depend on whatever sessions happen to be on the machine."""
     monkeypatch.setattr("medulla.episodic.scanner.CLAUDE_PROJECTS_DIR", tmp_path_factory.mktemp("no_projects"))
+    monkeypatch.setattr("medulla.episodic.scanner.KIRO_SESSIONS_DIR", tmp_path_factory.mktemp("no_kiro"))
+    monkeypatch.setattr("medulla.episodic.scanner.GEMINI_BRAIN_DIR", tmp_path_factory.mktemp("no_gemini"))
 
 
 @pytest.fixture
