@@ -6,7 +6,7 @@
     {
       "name": "medulla",
       "source": "./",
-      "description": "Search and resume past Claude Code and Kiro sessions."
+      "description": "Search and resume past Claude Code, Antigravity CLI and Kiro sessions."
     }
   ]
 }
