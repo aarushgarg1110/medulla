@@ -83,13 +83,13 @@ def _sysmsg(idx: int, content: str, ts: str = "2026-11-19T20:02:00Z") -> dict:
 
 def test_parse_gemini_extracts_clean_user_requests_assistant_replies_and_db_metadata(tmp_path):
     app = _make_agy_app(tmp_path, [
-        ("conv-1111", "introToNeon", '["file:///Users/agarg/my%20repo"]', "", 0),
+        ("conv-1111", "introToNeon", '["file:///Users/dev/my%20repo"]', "", 0),
     ])
     steps = [
         _user(0, "compare neon high vs opus 5.5"),
         _planner(1, tool_calls=[
-            {"name": "read_file", "args": {"Path": json.dumps("/Users/agarg/code/app.py")}},
-            {"name": "call_mcp_tool", "args": {"ServerName": json.dumps("aarush-ops"),
+            {"name": "read_file", "args": {"Path": json.dumps("/Users/dev/code/app.py")}},
+            {"name": "call_mcp_tool", "args": {"ServerName": json.dumps("my-mcp"),
                                                "ToolName": json.dumps("capabilities"), "Arguments": "{}"}},
             {"name": "call_mcp_tool", "args": {"ToolName": "standalone_tool"}},
         ]),
@@ -108,12 +108,12 @@ def test_parse_gemini_extracts_clean_user_requests_assistant_replies_and_db_meta
     assert s.source == "gemini"
     assert s.session_id == "conv-1111"
     assert s.slug == "introToNeon"
-    assert s.project_dir == "/Users/agarg/my repo"
+    assert s.project_dir == "/Users/dev/my repo"
     assert s.model == "gemini-4-neon-high"
     assert s.started_at == "2026-11-19T20:00:00Z" and s.ended_at == "2026-11-19T20:06:00Z"
     assert s.turn_count == 3 and s.tool_call_count == 3
-    assert s.tool_names == ["mcp:aarush-ops/capabilities", "read_file", "standalone_tool"]
-    assert "/Users/agarg/code/app.py" in s.files
+    assert s.tool_names == ["mcp:my-mcp/capabilities", "read_file", "standalone_tool"]
+    assert "/Users/dev/code/app.py" in s.files
     assert s.first_message == "compare neon high vs opus 5.5"
     assert "ADDITIONAL_METADATA" not in s.all_user_text
     assert "USER_SETTINGS_CHANGE" not in s.all_user_text
@@ -141,7 +141,7 @@ def test_parse_gemini_extracts_clean_user_requests_assistant_replies_and_db_meta
 
 def test_parse_gemini_skips_stubs_and_parses_subagent_sessions(tmp_path):
     app = _make_agy_app(tmp_path, [
-        ("sub-1", "research helper", '["file:///Users/agarg"]', "parent-1", 1),
+        ("sub-1", "research helper", '["file:///Users/dev"]', "parent-1", 1),
         ("bad-uris", "", "not-json-uris", "", 0),
         ("empty-uris", "untitled", "[]", "", 0),
     ])
@@ -167,12 +167,12 @@ def test_parse_gemini_skips_stubs_and_parses_subagent_sessions(tmp_path):
     ag = ps.parse_agent_session(sub)
     assert ag is not None
     assert ag.agent_id == "sub-1" and ag.parent_session_id == "parent-1"
-    assert ag.agent_slug == "research helper" and ag.project_dir == "/Users/agarg"
+    assert ag.agent_slug == "research helper" and ag.project_dir == "/Users/dev"
     assert ag.first_message == "find references" and "found 3" in ag.all_user_text
 
 
 def test_extract_gemini_tool_events_handles_unquoting_errors_bg_tasks_and_canceled_batches(tmp_path):
-    app = _make_agy_app(tmp_path, [("conv-2", "tools", '["file:///Users/agarg"]', "", 0)])
+    app = _make_agy_app(tmp_path, [("conv-2", "tools", '["file:///Users/dev"]', "", 0)])
     steps = [
         _user(0, "run tests"),
         # 1. Successful run_command + non-zero exit (status=DONE!) + trivial cd (skipped) + non-string raw arg
@@ -228,13 +228,13 @@ def test_extract_gemini_tool_events_handles_unquoting_errors_bg_tasks_and_cancel
     assert by_cmd["git commit -m test"].is_error is False and by_cmd["git commit -m test"].interrupted is True
     assert "write_file /tmp/a.txt" not in by_cmd                      # unpaired after user denial, not mis-paired with USER_INPUT
     assert by_cmd["read_file /tmp/missing.py"].is_error is True and by_cmd["read_file /tmp/missing.py"].interrupted is False
-    assert all(e.session_id == "conv-2" and e.project_dir == "/Users/agarg" for e in events)
+    assert all(e.session_id == "conv-2" and e.project_dir == "/Users/dev" for e in events)
 
 
 def test_scanner_discovers_gemini_by_uuid_routes_subagents_and_respects_mtime_and_forget(db, tmp_path, monkeypatch):
     app = _make_agy_app(tmp_path, [
-        ("main-1", "introToNeon", '["file:///Users/agarg"]', "", 0),
-        ("sub-1", "helper", '["file:///Users/agarg"]', "main-1", 1),
+        ("main-1", "introToNeon", '["file:///Users/dev"]', "", 0),
+        ("sub-1", "helper", '["file:///Users/dev"]', "main-1", 1),
     ])
     _write_gemini(app, "main-1", [
         _user(0, "check neon benchmarks"),
@@ -267,7 +267,7 @@ def test_scanner_discovers_gemini_by_uuid_routes_subagents_and_respects_mtime_an
 
 def test_stale_sessions_and_resume_index_live_gemini_session_by_title_and_id_prefix(db, tmp_path, monkeypatch):
     app = _make_agy_app(tmp_path, [
-        ("709bf40f-1111", "introToNeon", '["file:///Users/agarg/medulla"]', "", 0),
+        ("709bf40f-1111", "introToNeon", '["file:///Users/dev/medulla"]', "", 0),
     ])
     report = (
         "# Handoff\n\n"

@@ -177,7 +177,7 @@ def test_a_display_that_cannot_wake_says_why_and_gives_the_command(monkeypatch):
 
 def test_agy_started_matches_agy_process_not_wrapper_shells():
     out = ("/bin/zsh -lic agy -i '/pickoff introToNeon opened automatically'\n"
-           "/Users/agarg/.local/bin/agy -i /pickoff introToNeon opened automatically\n")
+           "/Users/dev/.local/bin/agy -i /pickoff introToNeon opened automatically\n")
     assert t.agy_started("introToNeon", Runner({"ps": out}))() is True
     assert t.agy_started("introToNeon", Runner({"ps": out.splitlines()[0]}))() is False
     assert t.agy_started("other", Runner({"ps": out}))() is False

@@ -397,12 +397,23 @@ def test_agy_post_tool_use_marks_handoff_skill_and_returns_empty_json(home, monk
 
 def test_agy_stop_nudges_with_continue_and_respects_continuation_and_reason(home, monkeypatch):
     monkeypatch.setenv("MEDULLA_AUTOHANDOFF", "true")
+    assert ah.threshold("claude") == 93.0
+    assert ah.threshold("gemini") == 45.0
     _write_ctx(home, "c1", size=1_000_000, name="introToNeon")
-    tp = agy_transcript(home, 950_000)
+    # Below Gemini's 45% default -> silent; above 45% (46%) -> nudges before agy's ~50% compaction
+    tp_low = agy_transcript(home, 440_000)
+    ev_low = {"hookEventName": "Stop", "conversationId": "c0", "transcriptPath": tp_low,
+              "terminationReason": "NO_TOOL_CALL", "continuationActive": False}
+    _write_ctx(home, "c0", size=1_000_000, name="introToNeon")
+    assert json.loads(_main(ev_low)) == {}
+    # Near 45% (42% >= 0.9 * 45%): context_line announces the 45% threshold
+    assert "autohandoff takes over at 45%" in ah.context_line("c0", agy_transcript(home, 420_000), harness="gemini")
+
+    tp = agy_transcript(home, 460_000)
     ev = {"hookEventName": "Stop", "conversationId": "c1", "transcriptPath": tp,
           "terminationReason": "NO_TOOL_CALL", "continuationActive": False}
     out = json.loads(_main(ev))
-    assert out["decision"] == "continue" and "95%" in out["reason"]
+    assert out["decision"] == "continue" and "46%" in out["reason"] and "45%" in out["reason"]
     # Already continuing or user canceled -> empty {}
     assert json.loads(_main({**ev, "conversationId": "c2", "continuationActive": True})) == {}
     assert json.loads(_main({**ev, "conversationId": "c3", "terminationReason": "USER_CANCELED"})) == {}
@@ -452,6 +463,7 @@ def test_config_toml_autohandoff_and_shell_hook_without_claude_plugin_root(home)
     cfg.write_text("[autohandoff]\nenabled = true\nat = 85\n")
     assert ah.enabled() is True
     assert ah.threshold() == 85.0
+    assert ah.threshold("gemini") == 85.0
     assert ah.threshold_source() == "from config.toml"
 
     # Corrupt config.toml fails open to default

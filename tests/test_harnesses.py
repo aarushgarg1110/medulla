@@ -23,6 +23,8 @@ def test_registry_lists_claude_and_gemini_and_rejects_unknown(isolated):
     assert set(harnesses.HARNESSES) == {"claude", "gemini"}
     assert harnesses.get("claude").settings_path() == isolated / "claude" / "settings.json"
     assert harnesses.get("gemini").settings_path() == isolated / "agy" / "settings.json"
+    assert harnesses.get("claude").default_threshold_pct == 93.0
+    assert harnesses.get("gemini").default_threshold_pct == 45.0
     with pytest.raises(ValueError, match="unknown harness"):
         harnesses.get("nonexistent")
 

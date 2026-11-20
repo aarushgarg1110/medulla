@@ -1,11 +1,12 @@
 """Hand a long session to its next part without the user doing it: prompt, tool and Stop hooks across
 any registered agent harness (Claude Code, Antigravity CLI), off unless the user turns them on.
 
-At the threshold (93% of the context window by default), a Stop hook keeps the turn going with one
-instruction: run the handoff skill. When that report ends a turn (it has the skill's "Immediate next
-action" section), the next part is opened beside this session through the active harness's launch
-command and terminal adapters. A handoff the user types, or one the agent starts through the handoff
-skill, opens the next part the same way at any context level; `nonext` in its arguments opts out.
+At the harness's threshold (93% of the context window for Claude, 45% for Antigravity by default),
+a Stop hook keeps the turn going with one instruction: run the handoff skill. When that report ends
+a turn (it has the skill's "Immediate next action" section), the next part is opened beside this
+session through the active harness's launch command and terminal adapters. A handoff the user types,
+or one the agent starts through the handoff skill, opens the next part the same way at any context
+level; `nonext` in its arguments opts out.
 
 Context % is the last main-chain request's input-side tokens (what the next request re-sends) over the
 window size. Window size comes from, in order: the statusline's record (`medulla statusline`), a
@@ -72,8 +73,8 @@ def enabled() -> bool:
     return _option("AUTOHANDOFF", "false", config_key="enabled").strip().lower() in ("1", "true", "yes", "on")
 
 
-def threshold() -> float:
-    return float(_option("AUTOHANDOFF_AT", "93", config_key="at"))
+def threshold(harness: str = "claude") -> float:
+    return float(_option("AUTOHANDOFF_AT", str(harnesses.get(harness).default_threshold_pct), config_key="at"))
 
 
 def threshold_source() -> str:
@@ -215,7 +216,7 @@ def context_line(sid: str, transcript_path: str | None, harness: str = "claude")
         return None
     h = harnesses.get(harness)
     size = window_size(sid, tokens)
-    pct, at = 100.0 * tokens / size, threshold()
+    pct, at = 100.0 * tokens / size, threshold(harness)
     line = f"[context] {pct:.1f}% of {size:,} tokens ({tokens:,})"
     title = h.title_of(sid, Path(transcript_path))
     if title:
@@ -326,11 +327,12 @@ def _handle_stop(ev: HookEvent, raw_event: dict, spawn) -> HookOutcome | None:
         return None
     wait_for_reply(ev.transcript_path)
     pct = context_pct(ev.sid, ev.transcript_path)
-    if pct is None or pct < threshold():
+    at = threshold(ev.harness)
+    if pct is None or pct < at:
         return None
     _flag(ev.sid).write_text("hook")
     _log(sid=ev.sid, action="request", pct=round(pct, 1))
-    return HookOutcome(decision="continue", reason=NUDGE.format(pct=pct, at=threshold(), src=threshold_source()))
+    return HookOutcome(decision="continue", reason=NUDGE.format(pct=pct, at=at, src=threshold_source()))
 
 
 def on_prompt(event: dict) -> dict | None:

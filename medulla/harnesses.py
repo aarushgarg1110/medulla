@@ -49,6 +49,7 @@ class HookOutcome:
 class Harness:
     name: str
     session_env: str
+    default_threshold_pct: float
     settings_path: Callable[[], Path]
     pane_fallback_title: str | None
     launch_line: Callable[[str, str], str]
@@ -263,6 +264,7 @@ HARNESSES: dict[str, Harness] = {
     "claude": Harness(
         name="claude",
         session_env="CLAUDE_CODE_SESSION_ID",
+        default_threshold_pct=93.0,
         settings_path=_claude_settings,
         pane_fallback_title=None,
         launch_line=_claude_launch,
@@ -276,6 +278,7 @@ HARNESSES: dict[str, Harness] = {
     "gemini": Harness(
         name="gemini",
         session_env="ANTIGRAVITY_CONVERSATION_ID",
+        default_threshold_pct=45.0,
         settings_path=_gemini_settings,
         pane_fallback_title="agy",
         launch_line=_gemini_launch,
