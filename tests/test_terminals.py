@@ -189,11 +189,33 @@ def test_ghostty_find_pane_falls_back_to_agy_title_with_cwd_tiebreak():
              dict(window="w", tab="t", id="c", title="agy -c", cwd="/two"),
              dict(window="w", tab="t", id="d", title="agy-docs", cwd="/three")]
     assert t.find_pane(panes, "introToNeon", "/two", fallback_title="agy")["id"] == "c"
+    # "agy-docs" does not match fallback_title="agy" (needs exact or "agy " prefix)
+    two_non_agy = [panes[0], panes[3]]
     with pytest.raises(LookupError):
-        t.find_pane([panes[3]], "introToNeon", "/three", fallback_title="agy")
+        t.find_pane(two_non_agy, "introToNeon", fallback_title="agy")
     with pytest.raises(LookupError):
         t.find_pane(panes, "introToNeon", fallback_title="agy")
     r = Runner({"osa:repeat with w in windows": "w1\tt1\tp2\tagy -c\t/w\n", "osa:new surface configuration": "p9"})
     detail, _ = t.ghostty_open("agy -i '/pickoff introToNeon'", "/w", {"SHELL": "/bin/sh"}, r,
                                title="introToNeon", fallback_title="agy")
     assert detail == "split right of Ghostty pane p2"
+
+
+def test_ghostty_find_pane_falls_back_to_unique_cwd_or_lone_pane():
+    shell_panes = [dict(window="w", tab="t", id="a", title="/Users/dev/code/a", cwd="/Users/dev/code/a"),
+                   dict(window="w", tab="t", id="b", title="/Users/dev/code/b", cwd="/Users/dev/code/b")]
+    # Unique cwd match when shell title overrides agy title
+    assert t.find_pane(shell_panes, "introToNeon", "/Users/dev/code/b", fallback_title="agy")["id"] == "b"
+    # Ambiguous cwd (two panes in same dir) or unmatched cwd with >1 pane never guesses
+    same_dir = [dict(window="w", tab="t", id="a", title="/w", cwd="/w"),
+                dict(window="w", tab="t", id="b", title="/w", cwd="/w")]
+    with pytest.raises(LookupError):
+        t.find_pane(same_dir, "introToNeon", "/w", fallback_title="agy")
+    with pytest.raises(LookupError):
+        t.find_pane(shell_panes, "introToNeon", "/elsewhere", fallback_title="agy")
+    # Single open Ghostty pane falls back even if workspace cwd differs from shell pane cwd
+    assert t.find_pane([shell_panes[0]], "introToNeon", "/Users/dev", fallback_title="agy")["id"] == "a"
+    assert t.find_pane([shell_panes[0]], "introToNeon", fallback_title="agy")["id"] == "a"
+    # Strict when fallback_title is None (Claude always sets its pane title)
+    with pytest.raises(LookupError):
+        t.find_pane([shell_panes[0]], "introToNeon", "/Users/dev/code/a")
