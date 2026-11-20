@@ -56,7 +56,7 @@ Install the CLI and index your history:
 
 ```bash
 uv tool install git+https://github.com/aarushgarg1110/medulla
-medulla scan
+medulla scan    # all sources; add --source claude for Claude Code only
 ```
 
 Then add the plugin:
@@ -87,7 +87,7 @@ Install the CLI and index your history:
 
 ```bash
 uv tool install git+https://github.com/aarushgarg1110/medulla
-medulla scan --source gemini
+medulla scan    # all sources; add --source gemini for Antigravity only
 ```
 
 Then register a local checkout of this repo as a native Antigravity plugin in `~/.gemini/config/plugins.json`
@@ -127,7 +127,7 @@ autohandoff:
 
 ```bash
 uv tool install git+https://github.com/aarushgarg1110/medulla
-medulla scan
+medulla scan                              # all sources; add --source claude|kiro for one only
 claude mcp add medulla medulla -- mcp     # Claude Code
 ```
 
