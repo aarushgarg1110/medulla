@@ -57,18 +57,31 @@ def _osascript(script: str, *args: str, runner=subprocess.run) -> str:
     return r.stdout.strip("\n")
 
 
-def claude_started(nxt: str, runner=subprocess.run) -> Callable[[], bool]:
-    """A check for a process whose arguments start `claude -n <nxt>`: the part itself, not the shells
-    that carry the same line further along theirs."""
-    own = f"claude -n {nxt}"
-
+def _process_started(match: Callable[[str], bool], runner=subprocess.run) -> Callable[[], bool]:
     def check() -> bool:
         try:
             out = runner(["ps", "-axww", "-o", "args="], capture_output=True, text=True, timeout=5).stdout
         except (OSError, subprocess.TimeoutExpired):
             return False
-        return any(a == own or a.startswith(own + " ") for a in map(str.lstrip, out.splitlines()))
+        return any(match(a.lstrip()) for a in out.splitlines())
     return check
+
+
+def claude_started(nxt: str, runner=subprocess.run) -> Callable[[], bool]:
+    """A check for a process whose arguments start `claude -n <nxt>`: the part itself, not the shells
+    that carry the same line further along theirs."""
+    own = f"claude -n {nxt}"
+    return _process_started(lambda a: a == own or a.startswith(own + " "), runner)
+
+
+def agy_started(prev: str, runner=subprocess.run) -> Callable[[], bool]:
+    """A check for a direct `agy -i` process carrying `/pickoff <prev>`, ignoring wrapper shells."""
+    needle = f"/pickoff {prev}"
+
+    def match(a: str) -> bool:
+        parts = a.split(None, 2)
+        return len(parts) >= 3 and os.path.basename(parts[0]) == "agy" and parts[1] == "-i" and needle in parts[2]
+    return _process_started(match, runner)
 
 
 def _wait(started: Callable[[], bool]) -> float | None:
@@ -152,9 +165,16 @@ def _same_dir(a: str, b: str) -> bool:
     return bool(a and b) and os.path.realpath(a) == os.path.realpath(b)
 
 
-def find_pane(panes: list[dict], title: str, cwd: str | None = None) -> dict:
-    """The one pane showing `title`; a tie is broken by working directory, never guessed."""
+def find_pane(panes: list[dict], title: str, cwd: str | None = None,
+              fallback_title: str | None = None) -> dict:
+    """The one pane showing `title` (or `fallback_title` / `fallback_title <args>` when none match
+    `title`, e.g. Ghostty panes running `agy` or `agy -c`); a tie is broken by working directory,
+    never guessed."""
     hits = [p for p in panes if _GLYPH.sub("", p["title"]).strip() == title]
+    if not hits and fallback_title:
+        hits = [p for p in panes
+                if (c := _GLYPH.sub("", p["title"]).strip()) == fallback_title
+                or c.startswith(fallback_title + " ")]
     if len(hits) > 1 and cwd:
         hits = [p for p in hits if _same_dir(p["cwd"], cwd)] or hits
     if len(hits) != 1:
@@ -196,9 +216,9 @@ def wake_display(runner=subprocess.run) -> bool:
     return True
 
 
-def ghostty_open(line, cwd, env, runner, title=None, **_) -> tuple[str, Callable[[], None]]:
+def ghostty_open(line, cwd, env, runner, title=None, fallback_title=None, **_) -> tuple[str, Callable[[], None]]:
     panes = ghostty_panes(runner)
-    src = find_pane(panes, title or "", cwd)
+    src = find_pane(panes, title or "", cwd, fallback_title=fallback_title)
     direction = split_direction(panes, src)
     new = _osascript(_GHOSTTY_SPLIT, src["id"], direction, src["cwd"] or cwd, pane_command(line, env),
                      runner=runner)
@@ -281,7 +301,7 @@ def _close(close: Callable[[], None] | None) -> str:
 
 
 def open_beside(line: str, cwd: str, title: str | None, started: Callable[[], bool],
-                env=None, runner=subprocess.run) -> tuple[bool, str]:
+                env=None, runner=subprocess.run, fallback_title: str | None = None) -> tuple[bool, str]:
     """Open `line` in `cwd` next to the session titled `title`; (ok, what happened)."""
     env = os.environ if env is None else env
     kind = detect(env)
@@ -290,7 +310,8 @@ def open_beside(line: str, cwd: str, title: str | None, started: Callable[[], bo
         return True, f"run in a new terminal: {run_it}"
     try:
         woke = kind != "tmux" and wake_display(runner)     # a macOS app may need an active display
-        detail, close = OPENERS[kind](line=line, cwd=cwd, env=env, runner=runner, title=title)
+        detail, close = OPENERS[kind](line=line, cwd=cwd, env=env, runner=runner,
+                                      title=title, fallback_title=fallback_title)
         detail += ", display woken" if woke else ""
     except (RuntimeError, LookupError, OSError, subprocess.TimeoutExpired) as e:
         return False, f"{kind}: {e}. Run it yourself: {run_it}"

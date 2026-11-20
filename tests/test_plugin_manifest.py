@@ -68,3 +68,23 @@ def test_the_handoff_section_is_the_heading_resume_finds():
     _, text = _frontmatter(ROOT / "skills" / "handoff" / "SKILL.md")
     section = next(line for line in text.splitlines() if line.startswith("**4."))
     assert _REPORT.search(section)
+
+
+def test_antigravity_plugin_manifests_are_portable_and_match_version():
+    m = json.loads((ROOT / ".antigravity-plugin" / "plugin.json").read_text())
+    assert m["name"] == "medulla"
+    assert m["version"].replace("-", "") == PYPROJECT["project"]["version"]
+
+    mcp = json.loads((ROOT / "mcp_config.json").read_text())
+    srv = mcp["mcpServers"]["medulla"]
+    assert srv["command"] == "uv" and srv["args"][-2:] == ["medulla", "mcp"]
+    assert "/Users/" not in json.dumps(mcp)
+
+    hooks = json.loads((ROOT / "hooks.json").read_text())
+    bundle = hooks["medulla-autohandoff"]
+    assert set(bundle) == {"PreInvocation", "PostToolUse", "Stop"}
+    for h in bundle["PreInvocation"] + bundle["Stop"]:
+        assert (ROOT / h["command"]).exists()
+    for group in bundle["PostToolUse"]:
+        for h in group["hooks"]:
+            assert (ROOT / h["command"]).exists()

@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "medulla": {
+      "command": "uv",
+      "args": [
+        "--project",
+        ".",
+        "run",
+        "--quiet",
+        "medulla",
+        "mcp"
+      ]
+    }
+  }
+}
